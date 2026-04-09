@@ -29,8 +29,7 @@ use instructions::batch_update_destinations::BatchUpdateDestinations;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 use state::BatchDestination;
 
-// TODO: Replace with actual program ID after deployment
-declare_id!("11111111111111111111111111111112");
+declare_id!("7uFYdyJwtF1cgH4kxVY7tNsi85znTnv1kHHRGmGM5TTm");
 
 #[program]
 pub mod ownership_token {
