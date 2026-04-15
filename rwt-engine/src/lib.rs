@@ -32,7 +32,7 @@ use instructions::update_distribution_config::UpdateDistributionConfig;
 use instructions::pause::{PauseMint, UnpauseMint};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
-declare_id!("A7dYHhaxqz397AktTv1Rt6t1L99EL3ZXtPESamcjxxj2");
+declare_id!("7WSkGn3JwAtt6gCJ7kkLezwaqvQQTGAPNyxho4hcqoXX");
 
 #[program]
 pub mod rwt_engine {
