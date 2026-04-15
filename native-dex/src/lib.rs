@@ -33,7 +33,7 @@ use instructions::update_pool_creators::UpdatePoolCreators;
 use instructions::pause::{PausePool, UnpausePool};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
-declare_id!("11111111111111111111111111111111"); // TODO: set after deploy
+declare_id!("5FAB2HRFT78AqmQ7c3auV3ttcqnoNx3VjDBYkSQbSZXL");
 
 #[program]
 pub mod native_dex {

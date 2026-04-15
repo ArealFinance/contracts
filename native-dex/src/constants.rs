@@ -11,13 +11,27 @@ pub const MIN_LIQUIDITY: u64 = 1_000;               // Burned on first add (anti
 pub const POOL_TYPE_STANDARD: u8 = 0;
 pub const POOL_TYPE_CONCENTRATED: u8 = 1;
 
-// Well-known mints (set at deployment, recompile for new addresses)
-// Placeholder — replace with actual deployed addresses before devnet deploy
-pub const RWT_MINT: [u8; 32] = [0u8; 32]; // TODO: set after RWT Engine deploy
-pub const USDC_MINT: [u8; 32] = [0u8; 32]; // TODO: set per cluster
+// Well-known mints (set per deployment, recompile for new cluster)
+// RWT_MINT = DgPTHLssLAcAsME4c5J2zfhLdLgJ8WRjA3UKg3vVz1uq
+pub const RWT_MINT: [u8; 32] = [
+    0xbc, 0x63, 0x48, 0x52, 0x8d, 0xfb, 0xee, 0x7e,
+    0xd9, 0x5e, 0x70, 0xd1, 0x42, 0xb1, 0x01, 0x31,
+    0x42, 0x70, 0x26, 0xe8, 0x8e, 0xb8, 0x77, 0x53,
+    0xa4, 0xe8, 0x78, 0x2e, 0xbe, 0x66, 0x4c, 0xc0,
+];
+
+// USDC_MINT — devnet test USDC (4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU)
+// Not validated on-chain in Layer 4 — used only by dashboard/bots for ATA derivation.
+pub const USDC_MINT: [u8; 32] = [0u8; 32]; // Not used in contract logic
 
 // Cross-program IDs
-pub const OT_PROGRAM_ID: [u8; 32] = [0u8; 32]; // TODO: set after OT deploy
+// OT_PROGRAM_ID = 7uFYdyJwtF1cgH4kxVY7tNsi85znTnv1kHHRGmGM5TTm
+pub const OT_PROGRAM_ID: [u8; 32] = [
+    0x66, 0x88, 0xc5, 0x2f, 0x04, 0x2f, 0xbd, 0xef,
+    0xbe, 0x2d, 0x7f, 0x13, 0x4d, 0x59, 0xf7, 0x94,
+    0x31, 0x35, 0xe3, 0xdb, 0xe6, 0x42, 0x04, 0x74,
+    0x0c, 0xec, 0xae, 0xbc, 0x08, 0x83, 0x8e, 0x78,
+];
 
 // Well-known program IDs (classic SPL Token only)
 pub const SPL_TOKEN_PROGRAM: [u8; 32] = [
