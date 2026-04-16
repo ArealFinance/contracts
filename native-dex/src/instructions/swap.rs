@@ -7,6 +7,7 @@ use crate::events::SwapExecuted;
 use crate::state::*;
 use crate::amm::{constant_product_output, calculate_fees};
 use crate::validation::*;
+use crate::concentrated;
 
 #[derive(Accounts)]
 pub struct Swap<'info> {
@@ -62,7 +63,9 @@ pub fn handler(
     if amount_in == 0 {
         return Err(ProgramError::from(DexError::ZeroAmount));
     }
-    if pool.reserve_a == 0 || pool.reserve_b == 0 {
+    // For StandardCurve: both reserves must be non-zero
+    // For Concentrated: one-sided liquidity is legitimate (bin-walk handles it)
+    if pool.pool_type == POOL_TYPE_STANDARD && (pool.reserve_a == 0 || pool.reserve_b == 0) {
         return Err(ProgramError::from(DexError::EmptyReserves));
     }
 
@@ -107,6 +110,9 @@ pub fn handler(
         (pool.reserve_b, pool.reserve_a)
     };
 
+    // Determine if token_a is RWT (needed for concentrated fee_lp bin sync)
+    let token_a_is_rwt_side = is_rwt_mint(&pool.token_a_mint);
+
     let (amount_out, fee_lp, fee_protocol, fee_ot_treasury, net_input);
 
     if input_is_rwt {
@@ -116,22 +122,88 @@ pub fn handler(
             .ok_or(ProgramError::from(DexError::MathOverflow))?;
         net_input = amount_in.checked_sub(total_deducted)
             .ok_or(ProgramError::from(DexError::MathOverflow))?;
-        amount_out = constant_product_output(reserve_in, reserve_out, net_input)?;
+
+        // Branch on pool type for output calculation
+        if pool.pool_type == POOL_TYPE_CONCENTRATED {
+            // Load BinArray from remaining_accounts with PDA verification
+            let bin_idx = if pool.has_ot_treasury { 1 } else { 0 };
+            if ctx.remaining_accounts.len() <= bin_idx {
+                return Err(ProgramError::from(DexError::InvalidBinRange));
+            }
+            let pool_key = pubkey_bytes(ctx.accounts.pool_state);
+            let (expected_bin_pda, _) = arlex_lang::find_program_address(
+                &[b"bins", pool_key.as_ref()],
+                ctx.program_id,
+            );
+            if ctx.remaining_accounts[bin_idx].address().as_ref() != expected_bin_pda.as_ref() {
+                return Err(ProgramError::InvalidSeeds);
+            }
+            let bin_array = BinArray::load_mut(&ctx.remaining_accounts[bin_idx], ctx.program_id)?;
+            let (walk_out, walk_remaining) = concentrated::bin_walk_swap(bin_array, pool.bin_step_bps, net_input, a_to_b)?;
+            amount_out = walk_out;
+            pool.active_bin_id = bin_array.active_bin_id;
+
+            // SECURITY: Sync unconsumed input + fee_lp into bins so sum(bins) == reserves.
+            concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
+            concentrated::sync_fee_lp_to_bin(bin_array, fees.fee_lp, token_a_is_rwt_side)?;
+        } else {
+            amount_out = constant_product_output(reserve_in, reserve_out, net_input)?;
+        }
+
         fee_lp = fees.fee_lp;
         fee_protocol = fees.fee_protocol;
         fee_ot_treasury = fees.ot_treasury_fee;
     } else {
         // Buying RWT: fee deducted from output AFTER swap
         net_input = amount_in;
-        let gross_out = constant_product_output(reserve_in, reserve_out, net_input)?;
-        let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
-        let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
-        amount_out = gross_out.checked_sub(total_deducted)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
-        fee_lp = fees.fee_lp;
-        fee_protocol = fees.fee_protocol;
-        fee_ot_treasury = fees.ot_treasury_fee;
+
+        // Branch on pool type for output calculation
+        let gross_out;
+        if pool.pool_type == POOL_TYPE_CONCENTRATED {
+            let bin_idx = if pool.has_ot_treasury { 1 } else { 0 };
+            if ctx.remaining_accounts.len() <= bin_idx {
+                return Err(ProgramError::from(DexError::InvalidBinRange));
+            }
+            let pool_key = pubkey_bytes(ctx.accounts.pool_state);
+            let (expected_bin_pda, _) = arlex_lang::find_program_address(
+                &[b"bins", pool_key.as_ref()],
+                ctx.program_id,
+            );
+            if ctx.remaining_accounts[bin_idx].address().as_ref() != expected_bin_pda.as_ref() {
+                return Err(ProgramError::InvalidSeeds);
+            }
+            let bin_array = BinArray::load_mut(&ctx.remaining_accounts[bin_idx], ctx.program_id)?;
+            let (walk_out, walk_remaining) = concentrated::bin_walk_swap(bin_array, pool.bin_step_bps, net_input, a_to_b)?;
+            gross_out = walk_out;
+            pool.active_bin_id = bin_array.active_bin_id;
+
+            // Sync unconsumed input into bins
+            concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
+
+            // Fees calculated once, used for both bin sync and reserve update
+            let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
+            // fee_lp stays in RWT vault — sync to active bin so bins match reserves
+            concentrated::sync_fee_lp_to_bin(bin_array, fees.fee_lp, token_a_is_rwt_side)?;
+
+            let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            amount_out = gross_out.checked_sub(total_deducted)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            fee_lp = fees.fee_lp;
+            fee_protocol = fees.fee_protocol;
+            fee_ot_treasury = fees.ot_treasury_fee;
+        } else {
+            gross_out = constant_product_output(reserve_in, reserve_out, net_input)?;
+
+            let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
+            let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            amount_out = gross_out.checked_sub(total_deducted)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            fee_lp = fees.fee_lp;
+            fee_protocol = fees.fee_protocol;
+            fee_ot_treasury = fees.ot_treasury_fee;
+        }
     }
 
     // Slippage check

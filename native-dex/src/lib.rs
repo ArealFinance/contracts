@@ -1,10 +1,10 @@
-//! Native DEX — AMM with constant product pools and fee model with OT Treasury support.
+//! Native DEX — AMM with constant product and concentrated liquidity pools.
 //!
 //! Purpose-built AMM for trading OT and RWT tokens. All pools pair with RWT.
 //! Fee split: LP (auto-compound) + protocol (Areal) + optional OT Treasury.
 //!
-//! 12 instructions (Layer 4 scope: StandardCurve only), 4 PDA accounts, 11 events.
-//! Concentrated pools (Layer 5), compound_yield (Layer 8), Nexus (Layer 9) deferred.
+//! 14 instructions (Layer 4 StandardCurve + Layer 5 Concentrated), 5 PDA accounts, 12 events.
+//! compound_yield (Layer 8), Nexus (Layer 9) deferred.
 //!
 //! Built on Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/native-dex.mdx for full specification.
@@ -18,16 +18,19 @@ pub mod error;
 pub mod events;
 pub mod state;
 pub mod amm;
+pub mod concentrated;
 pub mod validation;
 pub mod instructions;
 
 // Re-export instruction account structs for #[program] macro access
 use instructions::initialize_dex::InitializeDex;
 use instructions::create_pool::CreatePool;
+use instructions::create_concentrated_pool::CreateConcentratedPool;
 use instructions::add_liquidity::AddLiquidity;
 use instructions::zap_liquidity::ZapLiquidity;
 use instructions::remove_liquidity::RemoveLiquidity;
 use instructions::swap::Swap;
+use instructions::shift_liquidity::ShiftLiquidity;
 use instructions::update_dex_config::UpdateDexConfig;
 use instructions::update_pool_creators::UpdatePoolCreators;
 use instructions::pause::{PausePool, UnpausePool};
@@ -54,9 +57,19 @@ pub mod native_dex {
         crate::instructions::create_pool::handler(ctx)
     }
 
+    /// Create a concentrated liquidity pool with BinArray.
+    pub fn create_concentrated_pool(
+        ctx: Context<CreateConcentratedPool>,
+        bin_step_bps: u16,
+        initial_active_bin: i32,
+    ) -> Result<()> {
+        crate::instructions::create_concentrated_pool::handler(ctx, bin_step_bps, initial_active_bin)
+    }
+
     /// Add liquidity to a pool. Receive LP shares proportional to deposit.
-    pub fn add_liquidity(ctx: Context<AddLiquidity>, amount_a: u64, amount_b: u64) -> Result<()> {
-        crate::instructions::add_liquidity::handler(ctx, amount_a, amount_b)
+    /// For concentrated pools, pass BinArray as last remaining_account.
+    pub fn add_liquidity(ctx: Context<AddLiquidity>, amount_a: u64, amount_b: u64, min_shares: u128) -> Result<()> {
+        crate::instructions::add_liquidity::handler(ctx, amount_a, amount_b, min_shares)
     }
 
     /// Atomic single-token or imbalanced deposit → LP. Swaps excess internally.
@@ -70,8 +83,18 @@ pub mod native_dex {
     }
 
     /// Swap tokens through a pool. Fee direction depends on RWT side.
+    /// For concentrated pools, pass BinArray as remaining_account (after OT treasury if present).
     pub fn swap(ctx: Context<Swap>, amount_in: u64, min_amount_out: u64, a_to_b: bool) -> Result<()> {
         crate::instructions::swap::handler(ctx, amount_in, min_amount_out, a_to_b)
+    }
+
+    /// Redistribute bin liquidity to track NAV price. Rebalancer only.
+    pub fn shift_liquidity(
+        ctx: Context<ShiftLiquidity>,
+        nav_bin: i32,
+        target_bin_count: u16,
+    ) -> Result<()> {
+        crate::instructions::shift_liquidity::handler(ctx, nav_bin, target_bin_count)
     }
 
     /// Update DEX config: fees, rebalancer, active status. Authority only.

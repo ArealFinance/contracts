@@ -68,6 +68,11 @@ pub fn handler(
     if !pool.is_active {
         return Err(ProgramError::from(DexError::PoolNotActive));
     }
+    // SECURITY: Reject concentrated pools — zap uses constant_product internally,
+    // which is incorrect for bin-based pools. Use add_liquidity for concentrated.
+    if pool.pool_type == crate::constants::POOL_TYPE_CONCENTRATED {
+        return Err(ProgramError::from(DexError::InvalidPoolType));
+    }
     if amount_a == 0 && amount_b == 0 {
         return Err(ProgramError::from(DexError::ZeroAmount));
     }

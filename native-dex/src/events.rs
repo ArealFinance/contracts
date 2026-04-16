@@ -104,3 +104,14 @@ pub struct PoolUnpaused {
     pub pool: [u8; 32],
     pub timestamp: i64,
 }
+
+#[event]
+pub struct LiquidityShifted {
+    pub pool: [u8; 32],
+    pub rebalancer: [u8; 32],
+    pub old_lower: i32,
+    pub old_upper: i32,
+    pub new_lower: i32,
+    pub new_upper: i32,
+    pub timestamp: i64,
+}

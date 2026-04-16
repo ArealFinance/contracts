@@ -7,6 +7,7 @@ use crate::events::LiquidityRemoved;
 use crate::state::*;
 use crate::amm::calculate_remove_amounts;
 use crate::validation::*;
+use crate::concentrated;
 
 #[derive(Accounts)]
 pub struct RemoveLiquidity<'info> {
@@ -60,6 +61,11 @@ pub fn handler(
     if lp.owner != provider_key {
         return Err(ProgramError::from(DexError::Unauthorized));
     }
+    // SECURITY: Verify LP position belongs to THIS pool (prevents cross-pool drain)
+    let pool_key_check = pubkey_bytes(ctx.accounts.pool_state);
+    if lp.pool != pool_key_check {
+        return Err(ProgramError::from(DexError::InvalidVault));
+    }
     if lp.shares < shares_to_burn {
         return Err(ProgramError::from(DexError::InsufficientShares));
     }
@@ -68,6 +74,27 @@ pub fn handler(
     let (amount_a, amount_b) = calculate_remove_amounts(
         shares_to_burn, pool.reserve_a, pool.reserve_b, pool.total_lp_shares,
     )?;
+
+    // --- For concentrated pools: proportionally reduce bins (MANDATORY) ---
+    if pool.pool_type == POOL_TYPE_CONCENTRATED {
+        if ctx.remaining_accounts.is_empty() {
+            return Err(ProgramError::from(DexError::InvalidBinRange));
+        }
+        let pool_key_for_bin = pubkey_bytes(ctx.accounts.pool_state);
+        let (expected_bin_pda, _) = arlex_lang::find_program_address(
+            &[b"bins", pool_key_for_bin.as_ref()],
+            ctx.program_id,
+        );
+        if ctx.remaining_accounts[0].address().as_ref() != expected_bin_pda.as_ref() {
+            return Err(ProgramError::InvalidSeeds);
+        }
+        let bin_array = BinArray::load_mut(&ctx.remaining_accounts[0], ctx.program_id)?;
+        concentrated::proportional_bin_remove(
+            bin_array,
+            shares_to_burn,
+            pool.total_lp_shares,
+        )?;
+    }
 
     // --- Effects: update state BEFORE CPIs ---
     pool.reserve_a = pool.reserve_a.checked_sub(amount_a)

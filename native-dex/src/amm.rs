@@ -35,8 +35,12 @@ pub fn calculate_fees(
     lp_fee_share_bps: u16,
     has_ot_treasury: bool,
 ) -> core::result::Result<FeeBreakdown, ProgramError> {
-    let fee_total = arlex_lang::math::mul_div_u64(amount, fee_bps as u64, BPS_DENOMINATOR)
+    let mut fee_total = arlex_lang::math::mul_div_u64(amount, fee_bps as u64, BPS_DENOMINATOR)
         .ok_or(ProgramError::from(DexError::MathOverflow))?;
+    // Minimum fee: 1 lamport for non-zero swaps. Prevents fee avoidance via swap splitting.
+    if fee_total == 0 && amount > 0 && fee_bps > 0 {
+        fee_total = 1;
+    }
     let fee_lp = arlex_lang::math::mul_div_u64(fee_total, lp_fee_share_bps as u64, BPS_DENOMINATOR)
         .ok_or(ProgramError::from(DexError::MathOverflow))?;
     // Remainder pattern: protocol gets dust

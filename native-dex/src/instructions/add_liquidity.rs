@@ -4,9 +4,10 @@ use pinocchio::sysvars::{Sysvar, clock::Clock};
 use crate::constants::*;
 use crate::error::DexError;
 use crate::events::LiquidityAdded;
-use crate::state::{DexConfig, PoolState, LpPosition};
+use crate::state::{DexConfig, PoolState, LpPosition, BinArray};
 use crate::amm::calculate_lp_shares;
 use crate::validation::*;
+use crate::concentrated;
 
 #[derive(Accounts)]
 pub struct AddLiquidity<'info> {
@@ -53,6 +54,7 @@ pub fn handler(
     ctx: Context<AddLiquidity>,
     amount_a: u64,
     amount_b: u64,
+    min_shares: u128,
 ) -> Result<()> {
     let config = DexConfig::load(ctx.accounts.dex_config, ctx.program_id)?;
     let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
@@ -101,6 +103,34 @@ pub fn handler(
 
     if shares == 0 {
         return Err(ProgramError::from(DexError::ZeroOutput));
+    }
+
+    // Slippage protection via min_shares
+    if shares < min_shares {
+        return Err(ProgramError::from(DexError::SlippageExceeded));
+    }
+
+    // --- Distribute to bins for concentrated pools ---
+    if pool.pool_type == POOL_TYPE_CONCENTRATED {
+        // BinArray passed as last remaining_account
+        let bin_account_idx = ctx.remaining_accounts.len().checked_sub(1)
+            .ok_or(ProgramError::from(DexError::InvalidBinRange))?;
+        // Verify BinArray PDA derivation
+        let pool_key_for_bin = pubkey_bytes(ctx.accounts.pool_state);
+        let (expected_bin_pda, _) = arlex_lang::find_program_address(
+            &[b"bins", pool_key_for_bin.as_ref()],
+            ctx.program_id,
+        );
+        if ctx.remaining_accounts[bin_account_idx].address().as_ref() != expected_bin_pda.as_ref() {
+            return Err(ProgramError::InvalidSeeds);
+        }
+        let bin_array = BinArray::load_mut(&ctx.remaining_accounts[bin_account_idx], ctx.program_id)?;
+        concentrated::distribute_to_bins(
+            bin_array,
+            deposit_a,
+            deposit_b,
+            is_first,
+        )?;
     }
 
     // --- Effects: update pool state BEFORE CPIs ---

@@ -11,6 +11,14 @@ pub const MIN_LIQUIDITY: u64 = 1_000;               // Burned on first add (anti
 pub const POOL_TYPE_STANDARD: u8 = 0;
 pub const POOL_TYPE_CONCENTRATED: u8 = 1;
 
+// Concentrated liquidity
+pub const MAX_BINS: usize = 70;
+pub const DEFAULT_BIN_STEP_BPS: u16 = 10;            // 0.1% price step between bins
+pub const MAX_BIN_STEP_BPS: u16 = 500;               // 5% max step — prevents extreme price jumps
+pub const MAX_SHIFT_DISTANCE: i32 = 35;              // Max bins from active_bin to nav_bin
+pub const MAX_INITIAL_ACTIVE_BIN: i32 = 10_000;     // Reasonable range for initial_active_bin
+pub const CONCENTRATED_SCALE: u128 = 1_000_000_000_000; // 10^12 for pow_bps
+
 // Well-known mints (set per deployment, recompile for new cluster)
 // RWT_MINT = FUQX2AepBoun3hFQjoXcfbX5aGRLxfACx1sAqCC63i5
 pub const RWT_MINT: [u8; 32] = [

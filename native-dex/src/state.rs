@@ -84,3 +84,34 @@ pub struct LpPosition {
 // SIZE = 89, SPACE = 8 + 89 = 97
 
 const _: () = assert!(core::mem::size_of::<LpPosition>() == 89);
+
+// =============================================================================
+// Bin — 16 bytes (liquidity per price bin for concentrated pools)
+// =============================================================================
+
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+pub struct Bin {
+    pub liquidity_a: u64,   // 8 — RWT (ask side above active, both in active)
+    pub liquidity_b: u64,   // 8 — USDC (bid side below active, both in active)
+}
+
+const _: () = assert!(core::mem::size_of::<Bin>() == 16);
+
+// =============================================================================
+// BinArray — 1171 bytes (8 discriminator + 1163 data)
+// PDA Seed: ["bins", pool_state]
+// =============================================================================
+
+#[account]
+pub struct BinArray {
+    pub pool: [u8; 32],                          // 32
+    pub bins: [Bin; crate::constants::MAX_BINS], // 1120 (70 × 16)
+    pub lower_bin_id: i32,                       // 4
+    pub bin_step_bps: u16,                       // 2
+    pub active_bin_id: i32,                      // 4
+    pub bump: u8,                                // 1
+}
+// SIZE = 1163, SPACE = 8 + 1163 = 1171
+
+const _: () = assert!(core::mem::size_of::<BinArray>() == 1163);
