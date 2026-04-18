@@ -6,3 +6,4 @@ pub mod update_vault_manager;
 pub mod update_distribution_config;
 pub mod pause;
 pub mod authority_transfer;
+pub mod vault_swap;

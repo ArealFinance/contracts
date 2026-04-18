@@ -42,4 +42,12 @@ pub enum RwtError {
     SlippageExceeded,
     #[msg("Destination address cannot be zero")]
     ZeroDestination,
+    #[msg("DEX program account does not match DEX_PROGRAM_ID")]
+    InvalidDexProgram,
+    #[msg("Vault token account not owned by vault PDA")]
+    InvalidVaultTokenOwner,
+    #[msg("Manager wallet not set (zero address)")]
+    ManagerDisabled,
+    #[msg("Input and output token accounts must be different")]
+    SameTokenAccount,
 }

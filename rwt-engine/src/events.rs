@@ -64,3 +64,12 @@ pub struct MintPauseToggled {
     pub paused: bool,
     pub timestamp: i64,
 }
+
+#[event]
+pub struct VaultSwapExecuted {
+    pub token_in_mint: [u8; 32],
+    pub token_out_mint: [u8; 32],
+    pub amount_in: u64,
+    pub amount_out: u64,
+    pub timestamp: i64,
+}

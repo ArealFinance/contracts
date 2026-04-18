@@ -4,8 +4,8 @@
 //! of OT positions. Users deposit USDC to mint RWT at the current NAV price.
 //! A manager actively trades OT positions to grow the portfolio.
 //!
-//! 10 instructions (Layer 3 scope), 2 PDA accounts, 8 events.
-//! vault_swap (Layer 6) and claim_yield (Layer 8) deferred.
+//! 11 instructions (Layer 3 + Layer 6), 2 PDA accounts, 9 events.
+//! claim_yield (Layer 8) deferred.
 //!
 //! Built on Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/rwt-engine.mdx for full specification.
@@ -31,6 +31,7 @@ use instructions::update_vault_manager::UpdateVaultManager;
 use instructions::update_distribution_config::UpdateDistributionConfig;
 use instructions::pause::{PauseMint, UnpauseMint};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
+use instructions::vault_swap::VaultSwap;
 
 declare_id!("7WSkGn3JwAtt6gCJ7kkLezwaqvQQTGAPNyxho4hcqoXX");
 
@@ -116,5 +117,15 @@ pub mod rwt_engine {
     /// Step 2: Proposed authority accepts the transfer.
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         crate::instructions::authority_transfer::accept_handler(ctx)
+    }
+
+    /// CPI to DEX::swap with vault PDA as signer. Manager only.
+    pub fn vault_swap(
+        ctx: Context<VaultSwap>,
+        amount_in: u64,
+        min_amount_out: u64,
+        a_to_b: bool,
+    ) -> Result<()> {
+        crate::instructions::vault_swap::handler(ctx, amount_in, min_amount_out, a_to_b)
     }
 }
