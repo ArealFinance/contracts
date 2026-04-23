@@ -9,7 +9,3 @@ arlex-lang = { path = "../../../Solana/arlex/framework/arlex-lang" }
 
 [lib]
 crate-type = ["cdylib", "lib"]
-
-[profile.release]
-opt-level = "z"
-lto = true

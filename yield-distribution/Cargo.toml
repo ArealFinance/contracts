@@ -10,7 +10,3 @@ sha2 = { version = "0.10", default-features = false }
 
 [lib]
 crate-type = ["cdylib", "lib"]
-
-[profile.release]
-opt-level = "z"
-lto = true
