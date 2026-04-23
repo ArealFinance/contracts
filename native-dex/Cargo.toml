@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-arlex-lang = { path = "../../../Solana/arlex/framework/arlex-lang" }
+arlex-lang = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "lib"]
