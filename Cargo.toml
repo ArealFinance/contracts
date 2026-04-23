@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "futarchy",
+    "native-dex",
+    "ownership-token",
+    "rwt-engine",
+    "yield-distribution",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Areal Finance"]
+repository = "https://github.com/ArealFinance/contracts"
+
+[workspace.dependencies]
+arlex-lang = { git = "https://github.com/ArealFinance/arlex", tag = "v0.1.0" }
+sha2 = "0.10"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+overflow-checks = true

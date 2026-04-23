@@ -1,0 +1,18 @@
+# Build artifacts
+target/
+Cargo.lock.bak
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Rust
+*.so
+*.dylib
+
+# Logs
+*.log
