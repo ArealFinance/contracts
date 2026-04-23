@@ -16,3 +16,15 @@ Cargo.lock.bak
 
 # Logs
 *.log
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Solana keypairs
+keys/
+*-keypair.json
+deploy-keypair.json
