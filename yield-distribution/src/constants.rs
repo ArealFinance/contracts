@@ -13,6 +13,8 @@ pub const MAX_PROOF_LEN: usize = 20; // ~1M holders
 pub const MIN_VESTED_AMOUNT: u64 = 1_000_000; // 1 RWT floor
 
 // ----- Well-known program IDs (classic SPL Token only) -----
+// N-5 audit note: duplicated across contracts so attribute macros can use
+// literal byte arrays. Upstream source of truth: `arlex_lang::token::ID`.
 pub const SPL_TOKEN_PROGRAM: [u8; 32] = [
     0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93,
     0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,

@@ -1,7 +1,13 @@
 //! Create a concentrated liquidity pool with BinArray.
 //!
-//! ~77% code reuse with create_pool (shared validation: RWT pairing, canonical order, whitelist, OT treasury).
-//! Additions: bin_step_bps validation, BinArray PDA init, lower_bin_id = initial_active_bin - 35.
+//! Shares ~77% of its flow with `create_pool` — validation (whitelist, RWT
+//! pairing, canonical mint order), pool PDA + vault init, and OT treasury
+//! detection all live in `pool_creation.rs` (L-7 audit fix). This handler
+//! keeps only the concentrated-specific additions:
+//! - `bin_step_bps` / `initial_active_bin` argument validation
+//! - BinArray PDA creation
+//! - `bin_step_bps` and `active_bin_id` fields on PoolState
+//! - BinArray zero-init
 
 use arlex_lang::prelude::*;
 use pinocchio::sysvars::{Sysvar, clock::Clock};
@@ -9,8 +15,12 @@ use pinocchio::sysvars::{Sysvar, clock::Clock};
 use crate::constants::*;
 use crate::error::DexError;
 use crate::events::PoolCreated;
+use crate::pool_creation::{
+    create_pool_account, detect_ot_treasury, init_vault_pair, require_valid_mint_pair,
+    require_whitelisted_creator,
+};
 use crate::state::*;
-use crate::validation::*;
+use crate::validation::pubkey_bytes;
 
 #[derive(Accounts)]
 pub struct CreateConcentratedPool<'info> {
@@ -57,75 +67,38 @@ pub fn handler(
     initial_active_bin: i32,
 ) -> Result<()> {
     let config = DexConfig::load(ctx.accounts.dex_config, ctx.program_id)?;
-
-    // --- Check DEX is active ---
     if !config.is_active {
         return Err(ProgramError::from(DexError::DexPaused));
     }
 
-    // --- Validate bin_step_bps ---
+    // --- Concentrated-specific argument validation ---
     if bin_step_bps == 0 || bin_step_bps > MAX_BIN_STEP_BPS {
         return Err(ProgramError::from(DexError::InvalidBinStep));
     }
-
-    // --- Validate initial_active_bin range ---
     if initial_active_bin.abs() > MAX_INITIAL_ACTIVE_BIN {
         return Err(ProgramError::from(DexError::InvalidBinRange));
     }
 
-    // --- Validate creator is whitelisted ---
-    let creators = PoolCreators::load(ctx.accounts.pool_creators, ctx.program_id)?;
-    let creator_key = pubkey_bytes(ctx.accounts.creator);
-    let mut found = false;
-    for i in 0..creators.active_count as usize {
-        if creators.creators[i] == creator_key {
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        return Err(ProgramError::from(DexError::CreatorNotWhitelisted));
-    }
-
-    // --- Validate mint ordering and RWT presence ---
-    let mint_a = pubkey_bytes(ctx.accounts.token_a_mint);
-    let mint_b = pubkey_bytes(ctx.accounts.token_b_mint);
-
-    if mint_a == mint_b {
-        return Err(ProgramError::from(DexError::IdenticalMints));
-    }
-    if mint_a >= mint_b {
-        return Err(ProgramError::from(DexError::InvalidMintOrder));
-    }
-
-    // One of the mints must be RWT
-    let _a_is_rwt = token_a_is_rwt(&mint_a, &mint_b)?;
-
-    // --- Create Pool PDA ---
-    let (pool_pda, pool_bump) = arlex_lang::find_program_address(
-        &[b"pool", mint_a.as_ref(), mint_b.as_ref()],
+    // --- Shared setup (pool_creation.rs — L-7) ---
+    let creator_key = require_whitelisted_creator(
+        ctx.accounts.pool_creators,
+        ctx.accounts.creator,
         ctx.program_id,
-    );
-    if ctx.accounts.pool_state.address().as_ref() != pool_pda.as_ref() {
-        return Err(ProgramError::InvalidSeeds);
-    }
+    )?;
+    let (mint_a, mint_b) =
+        require_valid_mint_pair(ctx.accounts.token_a_mint, ctx.accounts.token_b_mint)?;
 
     let rent = pinocchio::sysvars::rent::Rent::get()?;
-    let lamports = rent.minimum_balance(PoolState::SPACE);
-    arlex_lang::system::instructions::CreateAccount {
-        from: ctx.accounts.creator,
-        to: ctx.accounts.pool_state,
-        lamports,
-        space: PoolState::SPACE as u64,
-        owner: ctx.program_id,
-    }.invoke_signed(&[Signer::from(&[
-        Seed::from(b"pool" as &[u8]),
-        Seed::from(mint_a.as_ref()),
-        Seed::from(mint_b.as_ref()),
-        Seed::from(&[pool_bump]),
-    ])])?;
+    let (pool_pda, pool_bump) = create_pool_account(
+        ctx.accounts.creator,
+        ctx.accounts.pool_state,
+        &mint_a,
+        &mint_b,
+        ctx.program_id,
+        &rent,
+    )?;
 
-    // --- Create BinArray PDA ---
+    // --- Create BinArray PDA (concentrated-specific) ---
     let pool_key = pubkey_bytes(ctx.accounts.pool_state);
     let (bin_pda, bin_bump) = arlex_lang::find_program_address(
         &[b"bins", pool_key.as_ref()],
@@ -142,84 +115,28 @@ pub fn handler(
         lamports: bin_lamports,
         space: BinArray::SPACE as u64,
         owner: ctx.program_id,
-    }.invoke_signed(&[Signer::from(&[
+    }
+    .invoke_signed(&[Signer::from(&[
         Seed::from(b"bins" as &[u8]),
         Seed::from(pool_key.as_ref()),
         Seed::from(&[bin_bump]),
     ])])?;
 
-    // --- Create vault token accounts (keypair-based, authority = pool PDA) ---
-    let vault_rent = rent.minimum_balance(165);
+    init_vault_pair(
+        ctx.accounts.creator,
+        ctx.accounts.vault_a,
+        ctx.accounts.vault_b,
+        ctx.accounts.token_a_mint,
+        ctx.accounts.token_b_mint,
+        &pool_pda,
+        &rent,
+    )?;
 
-    // Vault A
-    arlex_lang::system::instructions::CreateAccount {
-        from: ctx.accounts.creator,
-        to: ctx.accounts.vault_a,
-        lamports: vault_rent,
-        space: 165,
-        owner: &Address::new_from_array(SPL_TOKEN_PROGRAM),
-    }.invoke()?;
+    let (ot_treasury_fee_destination, has_ot_treasury) =
+        detect_ot_treasury(ctx.remaining_accounts, &mint_a, &mint_b)?;
 
-    arlex_lang::token::instructions::InitializeAccount3 {
-        account: ctx.accounts.vault_a,
-        mint: ctx.accounts.token_a_mint,
-        owner: &pool_pda,
-    }.invoke()?;
-
-    // Vault B
-    arlex_lang::system::instructions::CreateAccount {
-        from: ctx.accounts.creator,
-        to: ctx.accounts.vault_b,
-        lamports: vault_rent,
-        space: 165,
-        owner: &Address::new_from_array(SPL_TOKEN_PROGRAM),
-    }.invoke()?;
-
-    arlex_lang::token::instructions::InitializeAccount3 {
-        account: ctx.accounts.vault_b,
-        mint: ctx.accounts.token_b_mint,
-        owner: &pool_pda,
-    }.invoke()?;
-
-    // --- OT Treasury detection (optional remaining accounts) ---
-    let mut ot_treasury_fee_destination = [0u8; 32];
-    let mut has_ot_treasury = false;
-
-    if ctx.remaining_accounts.len() >= 2 {
-        let ot_treasury = &ctx.remaining_accounts[0];
-        let ot_treasury_rwt_ata = &ctx.remaining_accounts[1];
-
-        let ot_mint = if is_rwt_mint(&mint_a) { &mint_b } else { &mint_a };
-
-        let (expected_treasury_pda, _) = arlex_lang::find_program_address(
-            &[b"ot_treasury", ot_mint.as_ref()],
-            &Address::new_from_array(OT_PROGRAM_ID),
-        );
-        if ot_treasury.address().as_ref() != expected_treasury_pda.as_ref() {
-            return Err(ProgramError::from(DexError::InvalidOtTreasuryDestination));
-        }
-        if unsafe { ot_treasury.owner() }.as_ref() != OT_PROGRAM_ID.as_ref() {
-            return Err(ProgramError::from(DexError::InvalidOtTreasuryDestination));
-        }
-
-        let (expected_ata, _) = arlex_lang::find_program_address(
-            &[
-                expected_treasury_pda.as_ref(),
-                SPL_TOKEN_PROGRAM.as_ref(),
-                RWT_MINT.as_ref(),
-            ],
-            &Address::new_from_array(ASSOCIATED_TOKEN_PROGRAM),
-        );
-        if ot_treasury_rwt_ata.address().as_ref() != expected_ata.as_ref() {
-            return Err(ProgramError::from(DexError::InvalidOtTreasuryDestination));
-        }
-
-        ot_treasury_fee_destination.copy_from_slice(ot_treasury_rwt_ata.address().as_ref());
-        has_ot_treasury = true;
-    }
-
-    // --- Initialize PoolState ---
-    let lower_bin_id = initial_active_bin - (MAX_BINS as i32 / 2); // Center on initial_active_bin
+    // --- Concentrated-specific PoolState init ---
+    let lower_bin_id = initial_active_bin - (MAX_BINS as i32 / 2);
 
     let pool = PoolState::init(ctx.accounts.pool_state, ctx.program_id)?;
     pool.pool_type = POOL_TYPE_CONCENTRATED;
@@ -239,10 +156,9 @@ pub fn handler(
     pool.has_ot_treasury = has_ot_treasury;
     pool.bump = pool_bump;
 
-    // --- Initialize BinArray ---
+    // --- Initialize BinArray (concentrated-specific) ---
     let bins = BinArray::init(ctx.accounts.bin_array, ctx.program_id)?;
     bins.pool = pool_key;
-    // Initialize all 70 bins to zero (already zeroed by system program)
     for i in 0..MAX_BINS {
         bins.bins[i] = Bin { liquidity_a: 0, liquidity_b: 0 };
     }
@@ -251,7 +167,6 @@ pub fn handler(
     bins.active_bin_id = initial_active_bin;
     bins.bump = bin_bump;
 
-    // --- Emit event ---
     let clock = Clock::get()?;
     emit!(PoolCreated {
         pool: pool_key,

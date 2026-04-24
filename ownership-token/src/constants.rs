@@ -14,6 +14,13 @@ pub const MAX_DECIMALS: u8 = 9;
 // Token-2022 accounts (owned by TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb) will be rejected
 // by `owner = SPL_TOKEN_PROGRAM` constraints. This is acceptable for Layer 1 — all protocol
 // tokens (USDC, RWT, OT) use classic SPL Token.
+//
+// N-5 audit note: the authoritative value lives upstream as
+// `arlex_lang::token::ID`. It is duplicated here as `[u8; 32]` because call
+// sites use `Address::new_from_array(SPL_TOKEN_PROGRAM)` and attribute macros
+// that want a literal byte array at parse time. Consolidation into a shared
+// arlex helper is deferred to the next arlex minor release; the bytes are the
+// network-wide SPL Token program ID and cannot drift.
 pub const SPL_TOKEN_PROGRAM: [u8; 32] = [
     0x06, 0xdd, 0xf6, 0xe1, 0xd7, 0x65, 0xa1, 0x93,
     0xd9, 0xcb, 0xe1, 0x46, 0xce, 0xeb, 0x79, 0xac,

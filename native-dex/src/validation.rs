@@ -8,6 +8,10 @@ use arlex_lang::prelude::*;
 /// BPF loader; raw slice construction is sound as long as we respect `data_len()`
 /// (Solana guarantees the region is valid for the lifetime of the instruction).
 /// The explicit length check below ensures no out-of-bounds slicing.
+///
+/// N-6 audit note: duplicated in `rwt-engine` and `yield-distribution`
+/// (identical semantics). Consolidation into a shared arlex helper is deferred
+/// to the next arlex minor release.
 pub fn read_token_account_mint(account: &AccountView) -> core::result::Result<[u8; 32], ProgramError> {
     let data = unsafe {
         core::slice::from_raw_parts(account.data_ptr(), account.data_len())

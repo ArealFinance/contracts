@@ -5,6 +5,12 @@
 //!
 //! Built on Arlex framework (Pinocchio). CPI to OT contract for execution.
 //! See docs/contracts/futarchy.mdx for full specification.
+//!
+//! # Unsafe (L-5 audit note)
+//!
+//! `unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) }`
+//! blocks in this crate are the standard Pinocchio zero-copy pattern. Every
+//! such usage is followed by an explicit length check before indexing.
 
 extern crate alloc;
 

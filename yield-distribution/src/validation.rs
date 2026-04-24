@@ -1,3 +1,12 @@
+//! SPL Token Account zero-copy readers.
+//!
+//! L-5: `unsafe` blocks wrap raw-pointer slice construction (standard Pinocchio
+//! pattern); every read is bounded by an explicit length check.
+//!
+//! N-6 audit note: these helpers are duplicated in `rwt-engine` and `native-dex`
+//! with identical semantics. Consolidation into shared arlex helpers is
+//! deferred to the next arlex minor release.
+
 use arlex_lang::prelude::*;
 
 /// Read the `mint` field (first 32 bytes) from an SPL Token Account.

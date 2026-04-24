@@ -9,6 +9,15 @@
 //!
 //! Built on Arlex framework (Pinocchio). Classic SPL Token only (no Token-2022).
 //! See docs/contracts/ownership-token.mdx for full specification.
+//!
+//! # Unsafe (L-5 audit note)
+//!
+//! `unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) }`
+//! blocks throughout this crate are the standard Pinocchio zero-copy pattern.
+//! `AccountView` exposes the BPF-loader-provided account region as-is;
+//! constructing a slice from it is sound as long as `data_len()` bounds are
+//! respected. Every such usage is followed by an explicit length check before
+//! any indexing.
 
 extern crate alloc;
 

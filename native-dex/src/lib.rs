@@ -8,6 +8,13 @@
 //!
 //! Built on Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/native-dex.mdx for full specification.
+//!
+//! # Unsafe (L-5 audit note)
+//!
+//! `unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) }`
+//! blocks in this crate are the standard Pinocchio zero-copy pattern. Every
+//! such usage is followed by an explicit length check before indexing. See
+//! `validation.rs` for the full commented reference implementation.
 
 extern crate alloc;
 
@@ -20,6 +27,7 @@ pub mod state;
 pub mod amm;
 pub mod concentrated;
 pub mod validation;
+pub mod pool_creation;
 pub mod instructions;
 
 // Re-export instruction account structs for #[program] macro access

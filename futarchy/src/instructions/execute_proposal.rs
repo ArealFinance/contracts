@@ -257,6 +257,15 @@ fn execute_update_destinations(
     }
     let destinations_data_account = &ctx.remaining_accounts[3];
 
+    // SECURITY (M-4): defense-in-depth — require that the destinations payload
+    // lives in a plain system-owned data account. The SHA256 check below is the
+    // primary defence; this owner check removes the degenerate case where an
+    // attacker points us at a program-controlled account whose data could
+    // conceivably mutate between hash and read.
+    if !destinations_data_account.owned_by(&Address::new_from_array(SYSTEM_PROGRAM)) {
+        return Err(ProgramError::IllegalOwner);
+    }
+
     // SECURITY: SHA256 hash verification
     let data = unsafe {
         core::slice::from_raw_parts(
