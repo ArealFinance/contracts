@@ -67,10 +67,9 @@ pub fn bin_walk_swap(
             if consumable == 0 {
                 break;
             }
-            // rwt_consumed = consumable_usdc * SCALE / price (round UP — pool keeps more)
-            let rwt_consumed = arlex_lang::math::checked_mul_div_u128(consumable, CONCENTRATED_SCALE, price)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
-                .checked_add(1).ok_or(ProgramError::from(DexError::MathOverflow))?; // round up
+            // rwt_consumed = ceil(consumable_usdc * SCALE / price) — pool keeps more (M-8)
+            let rwt_consumed = arlex_lang::math::checked_mul_div_u128_round_up(consumable, CONCENTRATED_SCALE, price)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
             let rwt_consumed = core::cmp::min(rwt_consumed, remaining);
 
             // Safe u64 conversion (consumable <= available which is u64, rwt_consumed <= remaining which started as u64)
@@ -103,10 +102,9 @@ pub fn bin_walk_swap(
             if consumable == 0 {
                 break;
             }
-            // usdc_cost = consumable_rwt * price / SCALE (round UP — pool keeps more)
-            let usdc_cost = arlex_lang::math::checked_mul_div_u128(consumable, price, CONCENTRATED_SCALE)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
-                .checked_add(1).ok_or(ProgramError::from(DexError::MathOverflow))?; // round up
+            // usdc_cost = ceil(consumable_rwt * price / SCALE) — pool keeps more (M-8)
+            let usdc_cost = arlex_lang::math::checked_mul_div_u128_round_up(consumable, price, CONCENTRATED_SCALE)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
             let usdc_cost = core::cmp::min(usdc_cost, remaining);
 
             let consumable_u64 = u64::try_from(consumable).map_err(|_| ProgramError::from(DexError::MathOverflow))?;
@@ -359,10 +357,15 @@ pub fn distribute_to_bins(
         for bin_id in active_lower..=active_upper {
             let idx = (bin_id - lower) as usize;
             if bin_id <= active {
-                total_weight_b += bin_array.bins[idx].liquidity_b as u128;
+                // M-7: checked_add for defense-in-depth (overflow impossible at 10 * u64)
+                total_weight_b = total_weight_b
+                    .checked_add(bin_array.bins[idx].liquidity_b as u128)
+                    .ok_or(ProgramError::from(DexError::MathOverflow))?;
             }
             if bin_id >= active {
-                total_weight_a += bin_array.bins[idx].liquidity_a as u128;
+                total_weight_a = total_weight_a
+                    .checked_add(bin_array.bins[idx].liquidity_a as u128)
+                    .ok_or(ProgramError::from(DexError::MathOverflow))?;
             }
         }
 

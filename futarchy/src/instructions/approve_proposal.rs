@@ -26,6 +26,19 @@ pub fn handler(ctx: Context<ApproveProposal>) -> Result<()> {
 
     let proposal = Proposal::load_mut(ctx.accounts.proposal, ctx.program_id)?;
 
+    // SECURITY (H-3): Validate proposal PDA derives from ["proposal", config, proposal_id]
+    let (expected_proposal, _) = arlex_lang::find_program_address(
+        &[
+            b"proposal",
+            ctx.accounts.config.address().as_ref(),
+            &proposal.proposal_id.to_le_bytes(),
+        ],
+        ctx.program_id,
+    );
+    if ctx.accounts.proposal.address() != &expected_proposal {
+        return Err(ProgramError::from(FutarchyError::InvalidProposal));
+    }
+
     // SECURITY: Validate proposal belongs to this config (prevents cross-config action)
     if proposal.ot_mint != config.ot_mint {
         return Err(ProgramError::from(FutarchyError::ProposalConfigMismatch));

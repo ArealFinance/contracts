@@ -1,6 +1,7 @@
 // NAV pricing
-pub const INITIAL_NAV: u64 = 1_000_000; // $1.00 in USDC lamports (6 decimals)
-pub const MIN_CAPITAL_FLOOR: u64 = 1; // 1 lamport — prevents NAV = 0 with supply > 0
+pub const NAV_SCALE: u64 = 1_000_000;   // 6-decimal fixed-point scale for NAV (matches USDC decimals)
+pub const INITIAL_NAV: u64 = NAV_SCALE; // $1.00 in USDC lamports (6 decimals)
+pub const MIN_CAPITAL_FLOOR: u64 = 1;   // 1 lamport — prevents NAV = 0 with supply > 0
 pub const RWT_DECIMALS: u8 = 6;
 
 // Fee model

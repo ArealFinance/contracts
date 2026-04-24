@@ -62,4 +62,6 @@ pub enum OtError {
     InvalidFeeAccount,
     #[msg("Initial authority cannot be zero address")]
     InvalidInitialAuthority,
+    #[msg("New authority cannot be zero address")]
+    ZeroAuthority,
 }

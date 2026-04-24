@@ -73,6 +73,11 @@ pub fn handler(ctx: Context<MintRwt>, amount: u64, min_rwt_out: u64) -> Result<(
     if deposit_mint != capital_mint {
         return Err(ProgramError::from(RwtError::InvalidTokenAccount));
     }
+    // SECURITY (M-6): dao_fee_account must also hold USDC (same mint as capital)
+    let dao_fee_mint = read_token_account_mint(ctx.accounts.dao_fee_account)?;
+    if dao_fee_mint != capital_mint {
+        return Err(ProgramError::from(RwtError::InvalidTokenAccount));
+    }
     // user_rwt must hold vault's RWT mint
     let user_rwt_mint = read_token_account_mint(ctx.accounts.user_rwt)?;
     if user_rwt_mint != vault.rwt_mint {
@@ -84,12 +89,13 @@ pub fn handler(ctx: Context<MintRwt>, amount: u64, min_rwt_out: u64) -> Result<(
     let nav = calculate_nav(vault.total_invested_capital, vault.total_rwt_supply)?;
     let fee_total = arlex_lang::math::mul_div_u64(amount, MINT_FEE_BPS, BPS_DENOMINATOR)
         .ok_or(ProgramError::from(RwtError::MathOverflow))?;
-    let dao_fee = fee_total.checked_div(2).ok_or(ProgramError::from(RwtError::MathOverflow))?;
+    // N-11: checked_div(2) can't fail for u64 / 2; use arithmetic shift for clarity and CU.
+    let dao_fee = fee_total >> 1;
     let vault_fee = fee_total.checked_sub(dao_fee).ok_or(ProgramError::from(RwtError::MathOverflow))?;
     let net_deposit = amount.checked_sub(fee_total).ok_or(ProgramError::from(RwtError::MathOverflow))?;
 
-    // RWT output: net_deposit * 1_000_000 / nav
-    let rwt_out = arlex_lang::math::mul_div_u64(net_deposit, 1_000_000, nav)
+    // RWT output: net_deposit * NAV_SCALE / nav
+    let rwt_out = arlex_lang::math::mul_div_u64(net_deposit, NAV_SCALE, nav)
         .ok_or(ProgramError::from(RwtError::MathOverflow))?;
 
     // SECURITY: reject mint that would produce 0 RWT (user pays fee, gets nothing)

@@ -162,6 +162,9 @@ pub fn handler(
     // --- Initialize RevenueAccount ---
     let revenue = RevenueAccount::init(ctx.accounts.revenue_account, ctx.program_id)?;
     revenue.ot_mint.copy_from_slice(ot_mint_ref);
+    revenue.revenue_token_account.copy_from_slice(
+        ctx.accounts.revenue_token_account.address().as_ref()
+    );
     revenue.total_distributed = 0;
     revenue.distribution_count = 0;
     revenue.last_distribution_ts = 0;

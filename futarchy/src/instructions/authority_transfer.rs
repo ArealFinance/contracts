@@ -28,6 +28,11 @@ pub fn propose_handler(
     // NOTE: is_active NOT checked — authority must be able to transfer to unfreeze
     let config = FutarchyConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
 
+    // SECURITY (L-2): reject zero-address as new authority
+    if new_authority == [0u8; 32] {
+        return Err(ProgramError::from(FutarchyError::ZeroAuthority));
+    }
+
     if new_authority == config.authority {
         return Err(ProgramError::from(FutarchyError::SelfTransfer));
     }

@@ -64,11 +64,12 @@ pub struct OtConfig {
 }
 // SIZE = 284, SPACE = 8 + 284 = 292
 
-// RevenueAccount — 74 bytes (8 discriminator + 66 data)
+// RevenueAccount — 106 bytes (8 discriminator + 98 data)
 // PDA Seed: ["revenue", ot_mint]
 #[account]
 pub struct RevenueAccount {
     pub ot_mint: [u8; 32],              // 32
+    pub revenue_token_account: [u8; 32], // 32 — canonical USDC ATA owned by this PDA
     pub total_distributed: u64,          // 8
     pub distribution_count: u64,         // 8
     pub last_distribution_ts: i64,       // 8
@@ -76,7 +77,7 @@ pub struct RevenueAccount {
     pub is_distributing: bool,           // 1
     pub bump: u8,                        // 1
 }
-// SIZE = 66, SPACE = 8 + 66 = 74
+// SIZE = 98, SPACE = 8 + 98 = 106
 
 // RevenueConfig — 742 bytes (8 discriminator + 734 data)
 // PDA Seed: ["revenue_config", ot_mint]

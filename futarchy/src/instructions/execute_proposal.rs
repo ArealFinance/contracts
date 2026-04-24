@@ -36,6 +36,28 @@ pub fn handler(ctx: Context<ExecuteProposal>) -> Result<()> {
     let config = FutarchyConfig::load(ctx.accounts.config, ctx.program_id)?;
     let proposal = Proposal::load_mut(ctx.accounts.proposal, ctx.program_id)?;
 
+    // SECURITY (M-3): Validate config PDA derives from ["futarchy_config", ot_mint]
+    let (expected_config, _) = arlex_lang::find_program_address(
+        &[b"futarchy_config", config.ot_mint.as_ref()],
+        ctx.program_id,
+    );
+    if ctx.accounts.config.address() != &expected_config {
+        return Err(ProgramError::from(FutarchyError::InvalidFutarchyConfig));
+    }
+
+    // SECURITY (H-3): Validate proposal PDA derives from ["proposal", config, proposal_id]
+    let (expected_proposal, _) = arlex_lang::find_program_address(
+        &[
+            b"proposal",
+            ctx.accounts.config.address().as_ref(),
+            &proposal.proposal_id.to_le_bytes(),
+        ],
+        ctx.program_id,
+    );
+    if ctx.accounts.proposal.address() != &expected_proposal {
+        return Err(ProgramError::from(FutarchyError::InvalidProposal));
+    }
+
     // SECURITY: Validate proposal belongs to this config (prevents cross-config replay)
     if proposal.ot_mint != config.ot_mint {
         return Err(ProgramError::from(FutarchyError::ProposalConfigMismatch));
@@ -64,16 +86,17 @@ pub fn handler(ctx: Context<ExecuteProposal>) -> Result<()> {
         return Err(ProgramError::from(FutarchyError::InvalidOtGovernance));
     }
 
+    // SECURITY (H-2): Checks-effects-interactions — mark executed BEFORE CPI
+    let clock = Clock::get()?;
+    proposal.status = STATUS_EXECUTED;
+    proposal.executed_ts = clock.unix_timestamp;
+
     match proposal.proposal_type {
         PROPOSAL_TYPE_MINT_OT => execute_mint_ot(&ctx, &config, &proposal)?,
         PROPOSAL_TYPE_SPEND_TREASURY => execute_spend_treasury(&ctx, &config, &proposal)?,
         PROPOSAL_TYPE_UPDATE_DESTINATIONS => execute_update_destinations(&ctx, &config, &proposal)?,
         _ => return Err(ProgramError::from(FutarchyError::InvalidProposalType)),
     }
-
-    proposal.status = STATUS_EXECUTED;
-    let clock = Clock::get()?;
-    proposal.executed_ts = clock.unix_timestamp;
 
     let mut executor_bytes = [0u8; 32];
     executor_bytes.copy_from_slice(ctx.accounts.executor.address().as_ref());

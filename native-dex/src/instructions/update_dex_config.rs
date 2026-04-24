@@ -26,6 +26,10 @@ pub fn handler(
     rebalancer: [u8; 32],
     is_active: bool,
 ) -> Result<()> {
+    // Fee bounds: [0, MAX_FEE_BPS]. base_fee_bps == 0 is accepted by design (L-3);
+    // operators may waive protocol fees during promotions or emergency liquidity.
+    // Existing pools retain their own base_fee_bps captured at create time, so a
+    // global change does not affect active pools — only new pools (N-12).
     if base_fee_bps > MAX_FEE_BPS {
         return Err(ProgramError::from(DexError::InvalidFee));
     }

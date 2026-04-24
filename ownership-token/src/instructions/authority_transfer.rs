@@ -36,6 +36,11 @@ pub fn propose_handler(
 
     let governance = OtGovernance::load_mut(ctx.accounts.ot_governance, ctx.program_id)?;
 
+    // SECURITY (L-1): reject zero-address as new authority
+    if new_authority == [0u8; 32] {
+        return Err(ProgramError::from(OtError::ZeroAuthority));
+    }
+
     if new_authority == governance.authority {
         return Err(ProgramError::from(OtError::AuthorityTransferToSelf));
     }

@@ -41,7 +41,19 @@ pub struct DistributeRevenue<'info> {
 pub fn handler(ctx: Context<DistributeRevenue>) -> Result<()> {
     let revenue = RevenueAccount::load_mut(ctx.accounts.revenue_account, ctx.program_id)?;
 
-    // Reentrancy guard
+    // SECURITY (M-1/M-2): validate passed ATA matches the canonical one stored at init.
+    // Prevents distribute from an unexpected token account that happens to be owned by the
+    // revenue PDA (e.g. for a different mint).
+    if ctx.accounts.revenue_token_account.address().as_ref()
+        != revenue.revenue_token_account.as_ref()
+    {
+        return Err(ProgramError::from(OtError::InvalidTokenAccountOwner));
+    }
+
+    // Reentrancy guard — SPL Token CPIs don't call back, so the practical attack
+    // surface is nil. If any Transfer below returns Err, Solana atomicity reverts
+    // all state including `is_distributing`, so the flag does NOT get stuck.
+    // Defense-in-depth only (H-1 audit finding).
     if revenue.is_distributing {
         return Err(ProgramError::from(OtError::DistributionInProgress));
     }

@@ -2,6 +2,12 @@ use arlex_lang::prelude::*;
 
 /// Read mint field (first 32 bytes) from an SPL Token Account.
 /// SPL Token Account layout: [mint: 32][owner: 32][amount: u64][...]
+///
+/// L-5: `unsafe` is the standard Pinocchio pattern for zero-copy account access.
+/// The `AccountView` exposes `data_ptr()` and `data_len()` as-is from the Solana
+/// BPF loader; raw slice construction is sound as long as we respect `data_len()`
+/// (Solana guarantees the region is valid for the lifetime of the instruction).
+/// The explicit length check below ensures no out-of-bounds slicing.
 pub fn read_token_account_mint(account: &AccountView) -> core::result::Result<[u8; 32], ProgramError> {
     let data = unsafe {
         core::slice::from_raw_parts(account.data_ptr(), account.data_len())
@@ -15,6 +21,9 @@ pub fn read_token_account_mint(account: &AccountView) -> core::result::Result<[u
 }
 
 /// Read owner field (bytes 32..64) from an SPL Token Account.
+///
+/// L-5: same Pinocchio zero-copy pattern as `read_token_account_mint`. Length
+/// check prevents OOB reads.
 pub fn read_token_account_owner(account: &AccountView) -> core::result::Result<[u8; 32], ProgramError> {
     let data = unsafe {
         core::slice::from_raw_parts(account.data_ptr(), account.data_len())

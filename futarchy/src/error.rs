@@ -44,4 +44,10 @@ pub enum FutarchyError {
     ProposalConfigMismatch,
     #[msg("OT mint account does not match config ot_mint")]
     OtMintMismatch,
+    #[msg("Futarchy config PDA seeds do not match")]
+    InvalidFutarchyConfig,
+    #[msg("Proposal PDA seeds do not match")]
+    InvalidProposal,
+    #[msg("New authority cannot be zero address")]
+    ZeroAuthority,
 }

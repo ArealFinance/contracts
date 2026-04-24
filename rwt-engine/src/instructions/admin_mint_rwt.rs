@@ -1,3 +1,29 @@
+//! admin_mint_rwt — privileged mint backed by off-chain capital.
+//!
+//! # Trust model (M-5 audit note)
+//!
+//! This instruction lets the vault `authority` mint an arbitrary amount of RWT
+//! tokens as long as they assert a corresponding `backing_capital_usd`. NO
+//! on-chain source confirms that capital was actually deposited (e.g. an audit
+//! attestation, bank statement, or real-world asset custody proof).
+//!
+//! Consequence: anyone with the vault authority key can inflate RWT supply
+//! without matching real-world backing. The protocol's NAV invariant depends
+//! entirely on the authority's off-chain honesty here.
+//!
+//! Mitigations in place:
+//! - 2-step authority transfer (prevents instant takeover)
+//! - `is_active` can be flipped to pause the vault independently
+//! - Events emitted with full amount + capital for auditors
+//!
+//! Mitigations NOT in place (room for future work):
+//! - Per-call cap on `rwt_amount` / `backing_capital_usd`
+//! - Multi-sig on vault authority
+//! - On-chain oracle attestation (reserves proof)
+//!
+//! Operators: restrict vault authority to a hardware-signer multi-sig
+//! before any mainnet deployment.
+
 use arlex_lang::prelude::*;
 use pinocchio::sysvars::{Sysvar, clock::Clock};
 
