@@ -2,13 +2,15 @@
 
 Five Solana on-chain programs that form the [Areal Finance](https://areal.finance) protocol. All built on the [Arlex](https://github.com/ArealFinance/arlex) framework (Pinocchio-based, no Anchor).
 
-| Program | Instructions | Purpose |
-|---|---|---|
-| [`ownership-token`](./ownership-token) | 8 | Tokenized ownership of an asset; revenue distribution; treasury |
-| [`futarchy`](./futarchy) | 8 | Per-OT governance with proposals executed via CPI |
-| [`rwt-engine`](./rwt-engine) | 11 | Reward token minting, NAV bookkeeping, vault management |
-| [`native-dex`](./native-dex) | 12 | StandardCurve + concentrated-liquidity AMM, swaps, LP |
-| [`yield-distribution`](./yield-distribution) | 10 | Merkle-proof claims, USDC → RWT conversion |
+| Program | Instructions | Deployed (test-validator) | Purpose |
+|---|---|---|---|
+| [`ownership-token`](./ownership-token) | 8 | `oWnqbNwmEdjNS5KVbxz8xeuGNjKMd1aiNF89d7qdARL` | Tokenized ownership of an asset; revenue distribution; treasury |
+| [`futarchy`](./futarchy) | 8 | `FUTsbsdyJmEWa5LSYHWXMr9hQFyVsrJ1agGvRQGR1ARL` | Per-OT governance with proposals executed via CPI |
+| [`rwt-engine`](./rwt-engine) | 11 | `RWT9hgbjHQDj98xP7FYsT5QYp5X32XyK6QfMRmFtARL` | Reward token minting, NAV bookkeeping, vault management, DEX vault swaps |
+| [`native-dex`](./native-dex) | 12 | `DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL` | StandardCurve + concentrated-liquidity AMM, swaps, LP |
+| [`yield-distribution`](./yield-distribution) | 10 | `YLD9EBikcTmVCnVzdx6vuNajrDkp8tyCAgZrqTwmMXF` | Merkle-proof claims, USDC → RWT conversion |
+
+Public RPC for the test-validator: [`http://rpc.areal.finance`](http://rpc.areal.finance).
 
 ## CPI graph
 
