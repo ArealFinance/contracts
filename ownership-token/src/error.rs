@@ -64,4 +64,13 @@ pub enum OtError {
     InvalidInitialAuthority,
     #[msg("New authority cannot be zero address")]
     ZeroAuthority,
+    // ----- Layer 8 (claim_yd_for_treasury) -----
+    #[msg("yd_program account does not match pinned YD_PROGRAM_ID")]
+    InvalidYdProgram,
+    #[msg("ot_treasury PDA does not match expected derivation")]
+    InvalidOtTreasuryPda,
+    #[msg("treasury RWT ATA owner is not the OtTreasury PDA")]
+    InvalidTreasuryAtaOwner,
+    #[msg("treasury RWT ATA mint is not RWT_MINT")]
+    InvalidTreasuryAtaMint,
 }

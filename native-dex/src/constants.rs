@@ -21,6 +21,11 @@ pub const CONCENTRATED_SCALE: u128 = 1_000_000_000_000; // 10^12 for pow_bps
 
 // Well-known mints (set per deployment, recompile for new cluster)
 // RWT_MINT = FUQX2AepBoun3hFQjoXcfbX5aGRLxfACx1sAqCC63i5
+//
+// MAINNET-REPLACE: devnet vanity address. For mainnet release, replace
+// bytes here AND in contracts/ownership-token/src/constants.rs (RWT_MINT)
+// with the production RWT mint. Mismatch causes silent DoS on token-pair
+// validation across DEX swap/RWT/Layer 8 claim flows.
 pub const RWT_MINT: [u8; 32] = [
     0x03, 0xb5, 0x1e, 0x69, 0x7d, 0xb5, 0xc8, 0x64,
     0x82, 0x85, 0xb3, 0xfd, 0xbc, 0xd0, 0x43, 0xf8,

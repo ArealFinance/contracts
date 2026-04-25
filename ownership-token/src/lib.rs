@@ -37,6 +37,7 @@ use instructions::distribute_revenue::DistributeRevenue;
 use instructions::spend_treasury::SpendTreasury;
 use instructions::batch_update_destinations::BatchUpdateDestinations;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
+use instructions::claim_yd_for_treasury::ClaimYdForTreasury;
 use state::BatchDestination;
 
 declare_id!("oWnqbNwmEdjNS5KVbxz8xeuGNjKMd1aiNF89d7qdARL");
@@ -94,5 +95,17 @@ pub mod ownership_token {
     /// Step 2: Proposed authority accepts the transfer.
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         crate::instructions::authority_transfer::accept_handler(ctx)
+    }
+
+    /// OtTreasury PDA claims vested RWT from a Yield Distribution distributor.
+    /// Permissionless — any wallet can act as crank (pays ClaimStatus rent).
+    /// Cross-project yield supported (claim from a different OT's distributor).
+    /// Layer 8 §5.4.
+    pub fn claim_yd_for_treasury(
+        ctx: Context<ClaimYdForTreasury>,
+        cumulative_amount: u64,
+        proof: alloc::vec::Vec<[u8; 32]>,
+    ) -> Result<()> {
+        crate::instructions::claim_yd_for_treasury::handler(ctx, cumulative_amount, proof)
     }
 }

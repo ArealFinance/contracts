@@ -59,3 +59,16 @@ pub struct TreasurySpent {
     pub destination: [u8; 32],
     pub timestamp: i64,
 }
+
+/// Emitted by `claim_yd_for_treasury` when the OT Treasury PDA successfully
+/// claims vested RWT from a Yield Distribution distributor. Cross-project
+/// yield supported: `ot_mint` is THIS treasury's OT, `yd_ot_mint` is the OT
+/// of the source distributor (may differ for ARL Treasury claiming RCP yield).
+/// See Layer 8 architecture §6.4. Body layout: 32+32+8+8 = 80 bytes.
+#[event]
+pub struct TreasuryYieldClaimed {
+    pub ot_mint: [u8; 32],
+    pub yd_ot_mint: [u8; 32],
+    pub amount: u64,
+    pub timestamp: i64,
+}
