@@ -27,6 +27,7 @@ pub mod constants;
 pub mod error;
 pub mod events;
 pub mod state;
+pub(crate) mod cpi;
 pub mod instructions;
 
 // Re-export instruction account structs for #[program] macro access

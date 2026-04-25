@@ -31,6 +31,47 @@ pub const ASSOCIATED_TOKEN_PROGRAM: [u8; 32] = [
     0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
 ];
 
+// ----- Cross-program IDs (Layer 8 CPI targets) -----
+//
+// Source of truth: contracts/<program>/src/lib.rs `declare_id!(...)`.
+// N-5 audit note: duplicated as `[u8; 32]` because attribute macros and CPI
+// invocations need a literal byte array at parse time.
+
+// DEX: DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL (vanity)
+pub const DEX_PROGRAM_ID: [u8; 32] = [
+    0xb5, 0xc2, 0xdb, 0x9c, 0x43, 0x7f, 0xea, 0xd1,
+    0x4a, 0x4b, 0x38, 0x90, 0x93, 0xf5, 0x88, 0x24,
+    0x25, 0xf7, 0x5d, 0x37, 0xbb, 0xa8, 0x8c, 0x8d,
+    0xe9, 0xd1, 0x93, 0xde, 0x88, 0x6e, 0x79, 0x27,
+];
+
+// RWT Engine: RWT9hgbjHQDj98xP7FYsT5QYp5X32XyK6QfMRmFtARL (vanity)
+pub const RWT_ENGINE_PROGRAM_ID: [u8; 32] = [
+    0x06, 0x47, 0x3d, 0x57, 0x5a, 0xee, 0x84, 0xb9,
+    0x31, 0xd6, 0xc0, 0x90, 0x1e, 0x42, 0xc6, 0xb5,
+    0xf4, 0x57, 0x82, 0x1c, 0x13, 0x68, 0x40, 0xc6,
+    0x49, 0xa1, 0x15, 0xcd, 0x39, 0xdb, 0x48, 0x1f,
+];
+
+// ----- CPI discriminators -----
+//
+// Pre-computed `sha256("global:<ix_name>")[0..8]`. Verified at build time
+// by the parity tests in `cpi.rs` (#[cfg(test)] block).
+
+/// `native_dex::swap`
+/// sha256("global:swap")[..8]
+pub const DISC_DEX_SWAP: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0xc8];
+
+/// `rwt_engine::mint_rwt`
+/// sha256("global:mint_rwt")[..8]
+pub const DISC_RWT_MINT_RWT: [u8; 8] = [0x62, 0x20, 0x73, 0xde, 0x44, 0x0c, 0xa1, 0xa2];
+
+/// `yield_distribution::withdraw_liquidity_holding` (placeholder for Layer 9 Nexus)
+/// sha256("global:withdraw_liquidity_holding")[..8]
+pub const DISC_YD_WITHDRAW_LIQUIDITY_HOLDING: [u8; 8] = [
+    0x07, 0x14, 0x13, 0x12, 0xe4, 0x2e, 0xb3, 0x36,
+];
+
 // ----- Deployment-time pins (REPLACE for each environment) -----
 //
 // These placeholder values are the devnet pinned mints. For mainnet, overwrite

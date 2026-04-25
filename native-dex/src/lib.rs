@@ -28,6 +28,7 @@ pub mod amm;
 pub mod concentrated;
 pub mod validation;
 pub mod pool_creation;
+pub(crate) mod cpi;
 pub mod instructions;
 
 // Re-export instruction account structs for #[program] macro access

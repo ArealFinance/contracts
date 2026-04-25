@@ -22,6 +22,7 @@ pub mod state;
 pub mod validation;
 pub mod merkle;
 pub mod vesting;
+pub(crate) mod cpi;
 pub mod instructions;
 
 // Re-export instruction account structs for the #[program] macro.
