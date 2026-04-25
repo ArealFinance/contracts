@@ -38,7 +38,7 @@ use instructions::batch_update_destinations::BatchUpdateDestinations;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 use state::BatchDestination;
 
-declare_id!("7uFYdyJwtF1cgH4kxVY7tNsi85znTnv1kHHRGmGM5TTm");
+declare_id!("oWnqbNwmEdjNS5KVbxz8xeuGNjKMd1aiNF89d7qdARL");
 
 #[program]
 pub mod ownership_token {

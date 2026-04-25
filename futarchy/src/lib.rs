@@ -31,7 +31,7 @@ use instructions::execute_proposal::ExecuteProposal;
 use instructions::claim_ot_governance::ClaimOtGovernance;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
-declare_id!("GJ3JUhN7UG8DXuQu3cfr7ZEJ5YdCsH5Bd4SUPZ9gWrt");
+declare_id!("FUTsbsdyJmEWa5LSYHWXMr9hQFyVsrJ1agGvRQGR1ARL");
 
 #[program]
 pub mod futarchy {

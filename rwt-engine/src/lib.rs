@@ -39,7 +39,7 @@ use instructions::pause::{PauseMint, UnpauseMint};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 use instructions::vault_swap::VaultSwap;
 
-declare_id!("7WSkGn3JwAtt6gCJ7kkLezwaqvQQTGAPNyxho4hcqoXX");
+declare_id!("RWT9hgbjHQDj98xP7FYsT5QYp5X32XyK6QfMRmFtARL");
 
 #[program]
 pub mod rwt_engine {

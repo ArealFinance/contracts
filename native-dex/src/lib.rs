@@ -44,7 +44,7 @@ use instructions::update_pool_creators::UpdatePoolCreators;
 use instructions::pause::{PausePool, UnpausePool};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
-declare_id!("5FAB2HRFT78AqmQ7c3auV3ttcqnoNx3VjDBYkSQbSZXL");
+declare_id!("DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL");
 
 #[program]
 pub mod native_dex {

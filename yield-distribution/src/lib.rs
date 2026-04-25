@@ -35,7 +35,7 @@ use instructions::publish_root::PublishRoot;
 use instructions::update_config::UpdateConfig;
 use instructions::update_publish_authority::UpdatePublishAuthority;
 
-declare_id!("YDisT7m1epqXqQ9HexkqjqNBv5FauqYksRLfmeTpLbX");
+declare_id!("YLD9EBikcTmVCnVzdx6vuNajrDkp8tyCAgZrqTwmMXF");
 
 #[program]
 pub mod yield_distribution {
