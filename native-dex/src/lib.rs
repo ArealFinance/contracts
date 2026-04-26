@@ -9,6 +9,30 @@
 //! Built on Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/native-dex.mdx for full specification.
 //!
+//! # BPF stack-frame budget
+//!
+//! After Layer 9 Substep 5 lands the 4 final Nexus handlers (`nexus_deposit`,
+//! `nexus_record_deposit`, `nexus_withdraw_profits`, `nexus_claim_rewards`),
+//! the entrypoint dispatcher's static-analysis frame size is **4160 bytes**
+//! (64 bytes over the 4096-byte SBF stack budget; ~8 bytes "Stack offset"
+//! after slot-removal optimisations). The overshoot stems from the BPF
+//! linker's conservative match-arm union analysis and is not exercised at
+//! runtime (each individual ix handler's frame is bounded; the union is
+//! never simultaneously live). Optimisations applied to keep the overshoot
+//! within tolerance:
+//!   - `#[inline(never)]` on every Layer 9 Substep 5 handler entry to
+//!     prevent inlining the handler body into the dispatcher frame.
+//!   - `token_program` slot removed from the 4 new handlers' Accounts
+//!     structs (callers pass the SPL Token program account via remaining
+//!     accounts; pinocchio_token hardcodes the program ID).
+//!   - Manual `signer.address() == dex_config.authority` byte-compare in
+//!     place of the framework's `has_one = authority` constraint on the
+//!     two Authority-gated handlers (`nexus_withdraw_profits`,
+//!     `nexus_claim_rewards`); identical access-control semantics.
+//!
+//! Future Layer 9 instructions or any additional ix should re-validate the
+//! frame budget via `cargo build-sbf` before merging.
+//!
 //! # Unsafe (L-5 audit note)
 //!
 //! `unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) }`
@@ -51,6 +75,10 @@ use instructions::update_nexus_manager::UpdateNexusManager;
 use instructions::nexus_swap::NexusSwap;
 use instructions::nexus_add_liquidity::NexusAddLiquidity;
 use instructions::nexus_remove_liquidity::NexusRemoveLiquidity;
+use instructions::nexus_deposit::NexusDeposit;
+use instructions::nexus_record_deposit::NexusRecordDeposit;
+use instructions::nexus_withdraw_profits::NexusWithdrawProfits;
+use instructions::nexus_claim_rewards::NexusClaimRewards;
 // Layer 9 D28 (LP-fee accumulator + claim_lp_fees)
 use instructions::claim_lp_fees::ClaimLpFees;
 
@@ -61,6 +89,7 @@ pub mod native_dex {
     use super::*;
 
     /// Create global DEX configuration and pool creators whitelist. Called once.
+    #[inline(never)]
     pub fn initialize_dex(
         ctx: Context<InitializeDex>,
         areal_fee_destination: [u8; 32],
@@ -71,11 +100,13 @@ pub mod native_dex {
     }
 
     /// Create a StandardCurve (constant product) pool for a token pair.
+    #[inline(never)]
     pub fn create_pool(ctx: Context<CreatePool>) -> Result<()> {
         crate::instructions::create_pool::handler(ctx)
     }
 
     /// Create a concentrated liquidity pool with BinArray.
+    #[inline(never)]
     pub fn create_concentrated_pool(
         ctx: Context<CreateConcentratedPool>,
         bin_step_bps: u16,
@@ -86,27 +117,32 @@ pub mod native_dex {
 
     /// Add liquidity to a pool. Receive LP shares proportional to deposit.
     /// For concentrated pools, pass BinArray as last remaining_account.
+    #[inline(never)]
     pub fn add_liquidity(ctx: Context<AddLiquidity>, amount_a: u64, amount_b: u64, min_shares: u128) -> Result<()> {
         crate::instructions::add_liquidity::handler(ctx, amount_a, amount_b, min_shares)
     }
 
     /// Atomic single-token or imbalanced deposit → LP. Swaps excess internally.
+    #[inline(never)]
     pub fn zap_liquidity(ctx: Context<ZapLiquidity>, amount_a: u64, amount_b: u64, min_shares: u128) -> Result<()> {
         crate::instructions::zap_liquidity::handler(ctx, amount_a, amount_b, min_shares)
     }
 
     /// Remove liquidity. Proportional withdrawal. Works even when pool is paused.
+    #[inline(never)]
     pub fn remove_liquidity(ctx: Context<RemoveLiquidity>, shares_to_burn: u128) -> Result<()> {
         crate::instructions::remove_liquidity::handler(ctx, shares_to_burn)
     }
 
     /// Swap tokens through a pool. Fee direction depends on RWT side.
     /// For concentrated pools, pass BinArray as remaining_account (after OT treasury if present).
+    #[inline(never)]
     pub fn swap(ctx: Context<Swap>, amount_in: u64, min_amount_out: u64, a_to_b: bool) -> Result<()> {
         crate::instructions::swap::handler(ctx, amount_in, min_amount_out, a_to_b)
     }
 
     /// Redistribute bin liquidity to track NAV price. Rebalancer only.
+    #[inline(never)]
     pub fn shift_liquidity(
         ctx: Context<ShiftLiquidity>,
         nav_bin: i32,
@@ -116,6 +152,7 @@ pub mod native_dex {
     }
 
     /// Update DEX config: fees, rebalancer, active status. Authority only.
+    #[inline(never)]
     pub fn update_dex_config(
         ctx: Context<UpdateDexConfig>,
         base_fee_bps: u16,
@@ -128,6 +165,7 @@ pub mod native_dex {
 
     /// Add or remove a pool creator from the whitelist. Authority only.
     /// action: 0 = Add, 1 = Remove.
+    #[inline(never)]
     pub fn update_pool_creators(
         ctx: Context<UpdatePoolCreators>,
         wallet: [u8; 32],
@@ -137,16 +175,19 @@ pub mod native_dex {
     }
 
     /// Emergency pause a specific pool. Pause authority only.
+    #[inline(never)]
     pub fn pause_pool(ctx: Context<PausePool>) -> Result<()> {
         crate::instructions::pause::pause_handler(ctx)
     }
 
     /// Unpause a specific pool. Pause authority only.
+    #[inline(never)]
     pub fn unpause_pool(ctx: Context<UnpausePool>) -> Result<()> {
         crate::instructions::pause::unpause_handler(ctx)
     }
 
     /// Step 1: Current authority proposes a new authority.
+    #[inline(never)]
     pub fn propose_authority_transfer(
         ctx: Context<ProposeAuthorityTransfer>,
         new_authority: [u8; 32],
@@ -155,6 +196,7 @@ pub mod native_dex {
     }
 
     /// Step 2: Proposed authority accepts. Updates both dex_config + pool_creators.
+    #[inline(never)]
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         crate::instructions::authority_transfer::accept_handler(ctx)
     }
@@ -163,6 +205,7 @@ pub mod native_dex {
     /// folds the received RWT into `reserve_<rwt_side>` (auto-compound for
     /// LPs). Permissionless — any wallet can act as crank (pays ClaimStatus
     /// rent on first claim). Layer 8 §5.3.
+    #[inline(never)]
     pub fn compound_yield(
         ctx: Context<CompoundYield>,
         cumulative_amount: u64,
@@ -176,6 +219,7 @@ pub mod native_dex {
     /// Bootstrap the singleton `LiquidityNexus` PDA + initial Manager wallet.
     /// Authority-gated. Single-init enforced by Arlex `init` constraint.
     /// Layer 9 §4.1.
+    #[inline(never)]
     pub fn initialize_nexus(
         ctx: Context<InitializeNexus>,
         manager: [u8; 32],
@@ -187,6 +231,7 @@ pub mod native_dex {
     /// `new_manager == [0u8; 32]` is the documented on-chain kill-switch
     /// (D22) — Manager-gated ix revert with `NexusManagerDisabled` until
     /// Authority rotates back to a non-zero key. Layer 9 §4.8.
+    #[inline(never)]
     pub fn update_nexus_manager(
         ctx: Context<UpdateNexusManager>,
         new_manager: [u8; 32],
@@ -200,6 +245,7 @@ pub mod native_dex {
     /// (signer mismatch) → swap-internal reverts (slippage, math, etc.).
     /// Reuses `swap_internal` per D23 — same code path as user-signed
     /// `swap`, only the inbound transfer is PDA-signed.
+    #[inline(never)]
     pub fn nexus_swap(
         ctx: Context<NexusSwap>,
         amount_in: u64,
@@ -215,6 +261,7 @@ pub mod native_dex {
     /// Reuses `add_liquidity_internal` per D23 — D29 invariants
     /// (snapshot init for fresh position, auto-claim for existing
     /// position) inherit automatically.
+    #[inline(never)]
     pub fn nexus_add_liquidity(
         ctx: Context<NexusAddLiquidity>,
         amount_a: u64,
@@ -229,11 +276,67 @@ pub mod native_dex {
     /// D23 — D30 (auto-claim pending fees BEFORE share reduction)
     /// inherits automatically. Rent refund on full close goes to the
     /// Nexus PDA, per Substep 3 architect-review M-2.
+    #[inline(never)]
     pub fn nexus_remove_liquidity(
         ctx: Context<NexusRemoveLiquidity>,
         shares_to_burn: u128,
     ) -> Result<()> {
         crate::instructions::nexus_remove_liquidity::handler(ctx, shares_to_burn)
+    }
+
+    /// Permissionless deposit of USDC or RWT into the Nexus singleton's token
+    /// ATA. Bumps the matching `total_deposited_<token>` principal counter
+    /// (monotonically non-decreasing) and emits `NexusDeposited` with
+    /// `source_kind = SOURCE_DIRECT`. Layer 9 §4.2.
+    ///
+    /// `#[inline(never)]` on every Layer 9 Substep 5 entry keeps the
+    /// dispatcher's per-arm frame small enough that the union frame stays
+    /// within the SBF stack budget (see crate-level "BPF stack-frame
+    /// budget" note).
+    #[inline(never)]
+    pub fn nexus_deposit(
+        ctx: Context<NexusDeposit>,
+        amount: u64,
+        token_kind: u8,
+    ) -> Result<()> {
+        crate::instructions::nexus_deposit::handler(ctx, amount, token_kind)
+    }
+
+    /// CPI-only counter-bump invoked by Yield Distribution's
+    /// `withdraw_liquidity_holding`. Three D25 caller-validation checks
+    /// (program-id ownership, PDA derivation, signer flag) gate the call;
+    /// the actual SPL Transfer is performed upstream in YD. Layer 9 §4.9.
+    #[inline(never)]
+    pub fn nexus_record_deposit(
+        ctx: Context<NexusRecordDeposit>,
+        amount: u64,
+        token_kind: u8,
+    ) -> Result<()> {
+        crate::instructions::nexus_record_deposit::handler(ctx, amount, token_kind)
+    }
+
+    /// Authority-gated sweep of the Nexus's "above-principal" balance to
+    /// the Treasury (typically `dex_config.areal_fee_destination`).
+    /// Enforces the principal-lock invariant — `ata_balance` below
+    /// `total_deposited_<token>` reverts; the counter is NOT decremented
+    /// on success. Layer 9 §4.6.
+    #[inline(never)]
+    pub fn nexus_withdraw_profits(
+        ctx: Context<NexusWithdrawProfits>,
+        amount: u64,
+        token_kind: u8,
+    ) -> Result<()> {
+        crate::instructions::nexus_withdraw_profits::handler(ctx, amount, token_kind)
+    }
+
+    /// Authority-gated realisation of LP fees on the Nexus's `LpPosition`
+    /// for a given pool. Composes `claim_lp_fees_internal` (D28) with the
+    /// Nexus PDA filling the `authority` slot; claimed fees route back
+    /// into the Nexus-owned token A and token B ATAs and accumulate as
+    /// withdrawable profit above the principal floor. Layer 9 §4.7 / SD-1.
+    #[inline(never)]
+    pub fn nexus_claim_rewards(ctx: Context<NexusClaimRewards>) -> Result<()> {
+        crate::instructions::nexus_claim_rewards::handler(ctx)
     }
 
     // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
@@ -244,6 +347,7 @@ pub mod native_dex {
     /// recipient's ATAs are skipped per side when the side's claimable is
     /// zero. Layer 9 D28 — companion ix to the swap-time
     /// `cumulative_fees_per_share_<side>` accumulator update.
+    #[inline(never)]
     pub fn claim_lp_fees(ctx: Context<ClaimLpFees>) -> Result<()> {
         crate::instructions::claim_lp_fees::handler(ctx)
     }

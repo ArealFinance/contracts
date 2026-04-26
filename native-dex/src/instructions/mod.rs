@@ -17,5 +17,9 @@ pub mod update_nexus_manager;
 pub mod nexus_swap;
 pub mod nexus_add_liquidity;
 pub mod nexus_remove_liquidity;
+pub mod nexus_deposit;
+pub mod nexus_record_deposit;
+pub mod nexus_withdraw_profits;
+pub mod nexus_claim_rewards;
 // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
 pub mod claim_lp_fees;
