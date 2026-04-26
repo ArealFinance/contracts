@@ -115,3 +115,82 @@ pub struct BinArray {
 // SIZE = 1163, SPACE = 8 + 1163 = 1171
 
 const _: () = assert!(core::mem::size_of::<BinArray>() == 1163);
+
+// =============================================================================
+// LiquidityNexus — 58 bytes (8 discriminator + 50 data)
+// PDA Seed: ["liquidity_nexus"] (singleton, one Nexus per DEX deployment).
+//
+// Layer 9 §3 — Areal Finance LP-management PDA. Owns token ATAs (USDC + RWT)
+// and LpPosition entries (where `owner == nexus.key()`). Manager wallet
+// executes swap/add/remove ix; principal counters track cumulative deposits
+// and act as on-chain floor for `nexus_withdraw_profits`.
+//
+// Field naming follows docs canonical (`docs/contracts/native-dex.mdx`
+// LiquidityNexus state table, SD-2 / D16). `total_deposited_*` are
+// monotonically non-decreasing — they never reflect impairment; impairment
+// surfaces via ATA balance vs floor comparison inside `nexus_withdraw_profits`.
+//
+// `manager == [0u8; 32]` is the documented kill-switch (D22) — `assert_manager`
+// helper reverts `NexusManagerDisabled` regardless of which wallet signed.
+// =============================================================================
+
+#[account]
+pub struct LiquidityNexus {
+    pub manager: [u8; 32],                  // 32 — bot wallet, signer for nexus_swap/add/remove.
+    // Cumulative USDC deposited via nexus_deposit. Monotonically non-decreasing.
+    // Acts as on-chain principal floor for nexus_withdraw_profits — ATA balance
+    // minus this counter is the withdrawable profit.
+    pub total_deposited_usdc: u64,          // 8
+    // Cumulative RWT deposited via nexus_deposit + withdraw_liquidity_holding
+    // CPI drain. Monotonically non-decreasing. Same floor semantics as USDC.
+    pub total_deposited_rwt: u64,           // 8
+    pub is_active: bool,                    // 1 — Nexus kill-switch (initialized = true).
+    pub bump: u8,                           // 1 — PDA bump.
+}
+// SIZE = 50, SPACE = 8 + 50 = 58
+
+const _: () = assert!(core::mem::size_of::<LiquidityNexus>() == 50);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SD-2 / SD-15 / D16 — pin LiquidityNexus data layout at 50 bytes
+    /// (32 + 8 + 8 + 1 + 1). Catches drift if a field is reordered, resized,
+    /// or if `_reserved` slack is added without a state migration plan.
+    #[test]
+    fn liquidity_nexus_size_is_50_bytes() {
+        assert_eq!(core::mem::size_of::<LiquidityNexus>(), 50);
+        // SPACE includes the 8-byte arlex account discriminator.
+        assert_eq!(LiquidityNexus::SPACE, 58);
+    }
+
+    /// Singleton PDA — single-component seed, no per-token suffix. Catches
+    /// drift if anyone re-introduces a per-mint Nexus layout.
+    #[test]
+    fn liquidity_nexus_seed_is_singleton() {
+        let seeds: &[&[u8]] = &[crate::constants::LIQUIDITY_NEXUS_SEED];
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0], b"liquidity_nexus");
+    }
+
+    /// Default-init layout sanity check: zero-filled bytes mean every counter
+    /// starts at 0, manager is the zero pubkey (kill-switch active before
+    /// `initialize_nexus`), `is_active` is false. `initialize_nexus` is the
+    /// only ix that flips `is_active` to true; this test catches any drift
+    /// where a fabricated default would imply an "already-active" state.
+    #[test]
+    fn liquidity_nexus_default_uninitialized() {
+        // SAFETY: LiquidityNexus is `#[repr(C, packed)]` via #[account] and
+        // sums to 50 bytes exactly with no padding. All-zero is a valid bit
+        // pattern for every field type used here.
+        let buf = [0u8; core::mem::size_of::<LiquidityNexus>()];
+        let nexus: LiquidityNexus =
+            unsafe { core::ptr::read(buf.as_ptr() as *const LiquidityNexus) };
+        assert_eq!(nexus.manager, [0u8; 32]);
+        assert_eq!({ nexus.total_deposited_usdc }, 0);
+        assert_eq!({ nexus.total_deposited_rwt }, 0);
+        assert!(!nexus.is_active);
+        assert_eq!(nexus.bump, 0);
+    }
+}

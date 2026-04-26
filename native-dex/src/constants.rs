@@ -80,3 +80,47 @@ pub const YD_PROGRAM_ID: [u8; 32] = [
 /// `yield_distribution::claim`
 /// sha256("global:claim")[..8]
 pub const DISC_YD_CLAIM: [u8; 8] = [0x3e, 0xc6, 0xd6, 0xc1, 0xd5, 0x9f, 0x6c, 0xd2];
+
+// ----- Layer 9 (Liquidity Nexus) -----
+
+/// PDA seed for the singleton `LiquidityNexus` account. One Nexus per DEX
+/// deployment. Layer 9 §3, SD-2.
+pub const LIQUIDITY_NEXUS_SEED: &[u8] = b"liquidity_nexus";
+
+/// Address of the program that hosts the `LiquidityNexus` PDA — the DEX
+/// program itself (`DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL`). Used by
+/// Yield Distribution's `withdraw_liquidity_holding` to derive the Nexus PDA
+/// and to validate the CPI target program ID for `nexus_record_deposit`.
+/// SD-3 / D17.
+///
+/// Source of truth: this crate's `declare_id!(...)` in `lib.rs`. Duplicated
+/// as a `[u8; 32]` literal here because attribute macros and CPI invocations
+/// (across DEX and YD) need a literal byte array at parse time (N-5 audit
+/// note pattern). A parity test in `cpi.rs::tests` enforces that the bytes
+/// match the canonical vanity address.
+pub const NEXUS_HOSTING_PROGRAM_ID: [u8; 32] = [
+    0xb5, 0xc2, 0xdb, 0x9c, 0x43, 0x7f, 0xea, 0xd1,
+    0x4a, 0x4b, 0x38, 0x90, 0x93, 0xf5, 0x88, 0x24,
+    0x25, 0xf7, 0x5d, 0x37, 0xbb, 0xa8, 0x8c, 0x8d,
+    0xe9, 0xd1, 0x93, 0xde, 0x88, 0x6e, 0x79, 0x27,
+];
+
+/// Manager kill-switch sentinel value (the zero pubkey). Per D22, when
+/// `LiquidityNexus.manager` equals this value, every manager-gated ix
+/// (`nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`) reverts
+/// with `NexusManagerDisabled` via the `assert_manager` helper, regardless
+/// of which wallet signed. `update_nexus_manager` intentionally allows
+/// setting the manager to this value — that is the on-chain kill-switch.
+pub const NEXUS_MANAGER_KILL_SWITCH: [u8; 32] = [0u8; 32];
+
+/// Token-kind tags used by `nexus_deposit` / `nexus_record_deposit` /
+/// `nexus_withdraw_profits` to disambiguate the principal counter to bump
+/// or read. Layer 9 §4.2 / §4.6 / §4.9.
+pub const TOKEN_KIND_USDC: u8 = 0;
+pub const TOKEN_KIND_RWT: u8 = 1;
+
+/// Source-kind tags emitted in `NexusDeposited.source_kind` to distinguish
+/// permissionless `nexus_deposit` calls from the YD `withdraw_liquidity_holding`
+/// CPI drain. Layer 9 §4.2 / §4.9.
+pub const NEXUS_DEPOSIT_SOURCE_DIRECT: u8 = 0;
+pub const NEXUS_DEPOSIT_SOURCE_LIQUIDITY_HOLDING: u8 = 1;

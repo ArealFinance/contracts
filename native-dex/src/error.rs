@@ -91,4 +91,23 @@ pub enum DexError {
     TargetVaultNotRwt,
     #[msg("ot_mint does not match the pool's OT side mint")]
     InvalidOtMint,
+    // ----- Layer 9 (Liquidity Nexus) -----
+    #[msg("Nexus is_active = false")]
+    NexusNotActive,
+    #[msg("Signer is not the Nexus manager")]
+    InvalidNexusManager,
+    #[msg("Nexus manager is the zero pubkey kill-switch")]
+    NexusManagerDisabled,
+    #[msg("nexus_deposit token_mint is not USDC_MINT or RWT_MINT")]
+    InvalidNexusToken,
+    #[msg("Withdraw amount exceeds (ATA balance - principal floor) profit")]
+    InsufficientNexusProfit,
+    #[msg("Nexus PDA not found in merkle tree or proof invalid")]
+    NexusClaimFailed,
+    #[msg("Nexus LP position is missing or owner mismatch")]
+    InvalidNexusLpPosition,
+    #[msg("nexus_record_deposit may only be invoked via CPI from Yield Distribution")]
+    NexusRecordDepositOnlyFromYd,
+    #[msg("LiquidityHolding PDA derivation does not match passed account")]
+    InvalidLiquidityHoldingPda,
 }
