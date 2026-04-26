@@ -48,6 +48,9 @@ use instructions::compound_yield::CompoundYield;
 // Layer 9 (Liquidity Nexus)
 use instructions::initialize_nexus::InitializeNexus;
 use instructions::update_nexus_manager::UpdateNexusManager;
+use instructions::nexus_swap::NexusSwap;
+use instructions::nexus_add_liquidity::NexusAddLiquidity;
+use instructions::nexus_remove_liquidity::NexusRemoveLiquidity;
 // Layer 9 D28 (LP-fee accumulator + claim_lp_fees)
 use instructions::claim_lp_fees::ClaimLpFees;
 
@@ -189,6 +192,48 @@ pub mod native_dex {
         new_manager: [u8; 32],
     ) -> Result<()> {
         crate::instructions::update_nexus_manager::handler(ctx, new_manager)
+    }
+
+    /// Manager-gated swap with the Nexus PDA acting as swap authority.
+    /// Layer 9 §4.3. Revert order: `NexusNotActive` (Nexus disabled) →
+    /// `NexusManagerDisabled` (kill-switch sentinel) → `InvalidNexusManager`
+    /// (signer mismatch) → swap-internal reverts (slippage, math, etc.).
+    /// Reuses `swap_internal` per D23 — same code path as user-signed
+    /// `swap`, only the inbound transfer is PDA-signed.
+    pub fn nexus_swap(
+        ctx: Context<NexusSwap>,
+        amount_in: u64,
+        min_amount_out: u64,
+        a_to_b: bool,
+    ) -> Result<()> {
+        crate::instructions::nexus_swap::handler(ctx, amount_in, min_amount_out, a_to_b)
+    }
+
+    /// Manager-gated add-liquidity with the Nexus PDA acting as LP
+    /// authority. Layer 9 §4.4. Manager wallet additionally pays rent on
+    /// first `LpPosition` creation (Substep 3 architect-review M-1).
+    /// Reuses `add_liquidity_internal` per D23 — D29 invariants
+    /// (snapshot init for fresh position, auto-claim for existing
+    /// position) inherit automatically.
+    pub fn nexus_add_liquidity(
+        ctx: Context<NexusAddLiquidity>,
+        amount_a: u64,
+        amount_b: u64,
+        min_shares: u128,
+    ) -> Result<()> {
+        crate::instructions::nexus_add_liquidity::handler(ctx, amount_a, amount_b, min_shares)
+    }
+
+    /// Manager-gated remove-liquidity with the Nexus PDA acting as LP
+    /// authority. Layer 9 §4.5. Reuses `remove_liquidity_internal` per
+    /// D23 — D30 (auto-claim pending fees BEFORE share reduction)
+    /// inherits automatically. Rent refund on full close goes to the
+    /// Nexus PDA, per Substep 3 architect-review M-2.
+    pub fn nexus_remove_liquidity(
+        ctx: Context<NexusRemoveLiquidity>,
+        shares_to_burn: u128,
+    ) -> Result<()> {
+        crate::instructions::nexus_remove_liquidity::handler(ctx, shares_to_burn)
     }
 
     // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----

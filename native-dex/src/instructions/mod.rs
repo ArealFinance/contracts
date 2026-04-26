@@ -14,5 +14,8 @@ pub mod compound_yield;
 // ----- Layer 9 (Liquidity Nexus) -----
 pub mod initialize_nexus;
 pub mod update_nexus_manager;
+pub mod nexus_swap;
+pub mod nexus_add_liquidity;
+pub mod nexus_remove_liquidity;
 // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
 pub mod claim_lp_fees;
