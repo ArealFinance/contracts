@@ -50,14 +50,80 @@ pub struct AddLiquidity<'info> {
     pub system_program: &'info AccountView,
 }
 
+/// Decoupled view of `AddLiquidity` accounts used by `add_liquidity_internal`.
+///
+/// Allows reuse of the core add-liquidity logic from any handler whose accounts
+/// can project into this shape (user-signed `add_liquidity` or PDA-signed
+/// alternative callers added in later layers).
+pub(crate) struct AddLiquidityAccountsView<'info> {
+    pub authority: &'info AccountView,
+    pub payer: &'info AccountView,
+    pub dex_config: &'info AccountView,
+    pub pool_state: &'info AccountView,
+    pub lp_position: &'info AccountView,
+    pub provider_token_a: &'info AccountView,
+    pub provider_token_b: &'info AccountView,
+    pub vault_a: &'info AccountView,
+    pub vault_b: &'info AccountView,
+}
+
+impl<'info> AddLiquidity<'info> {
+    pub(crate) fn view(&self) -> AddLiquidityAccountsView<'info> {
+        AddLiquidityAccountsView {
+            authority: self.provider,
+            payer: self.payer,
+            dex_config: self.dex_config,
+            pool_state: self.pool_state,
+            lp_position: self.lp_position,
+            provider_token_a: self.provider_token_a,
+            provider_token_b: self.provider_token_b,
+            vault_a: self.vault_a,
+            vault_b: self.vault_b,
+        }
+    }
+}
+
 pub fn handler(
     ctx: Context<AddLiquidity>,
     amount_a: u64,
     amount_b: u64,
     min_shares: u128,
 ) -> Result<()> {
-    let config = DexConfig::load(ctx.accounts.dex_config, ctx.program_id)?;
-    let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
+    add_liquidity_internal(
+        &ctx.accounts.view(),
+        ctx.remaining_accounts,
+        ctx.program_id,
+        amount_a,
+        amount_b,
+        min_shares,
+        None,
+    )
+}
+
+/// Core add-liquidity logic — usable by user-signed `add_liquidity` and by
+/// PDA-signed alternative callers (e.g. future layers passing
+/// `Some(&[Signer])`).
+///
+/// Internal helper — do NOT use as instruction entrypoint. Caller must
+/// validate access control before invoking.
+///
+/// `authority_signer_seeds`:
+///   - `None` — authority is a transaction signer (user-signed path); the
+///     inbound `provider_token_* -> vault_*` transfers are invoked without
+///     seeds.
+///   - `Some(seeds)` — authority is a PDA; the inbound transfers are invoked
+///     with the supplied signer seeds.
+pub(crate) fn add_liquidity_internal<'info>(
+    accounts: &AddLiquidityAccountsView<'info>,
+    remaining_accounts: &'info [AccountView],
+    program_id: &Address,
+    amount_a: u64,
+    amount_b: u64,
+    min_shares: u128,
+    authority_signer_seeds: Option<&[Signer]>,
+) -> Result<()> {
+    let config = DexConfig::load(accounts.dex_config, program_id)?;
+    let pool = PoolState::load_mut(accounts.pool_state, program_id)?;
 
     // --- Checks ---
     if !config.is_active {
@@ -71,8 +137,8 @@ pub fn handler(
     }
 
     // SECURITY: Validate vaults match pool state
-    validate_vault(ctx.accounts.vault_a, &pool.vault_a)?;
-    validate_vault(ctx.accounts.vault_b, &pool.vault_b)?;
+    validate_vault(accounts.vault_a, &pool.vault_a)?;
+    validate_vault(accounts.vault_b, &pool.vault_b)?;
 
     // --- Calculate LP shares ---
     let is_first = pool.total_lp_shares == 0;
@@ -113,18 +179,18 @@ pub fn handler(
     // --- Distribute to bins for concentrated pools ---
     if pool.pool_type == POOL_TYPE_CONCENTRATED {
         // BinArray passed as last remaining_account
-        let bin_account_idx = ctx.remaining_accounts.len().checked_sub(1)
+        let bin_account_idx = remaining_accounts.len().checked_sub(1)
             .ok_or(ProgramError::from(DexError::InvalidBinRange))?;
         // Verify BinArray PDA derivation
-        let pool_key_for_bin = pubkey_bytes(ctx.accounts.pool_state);
+        let pool_key_for_bin = pubkey_bytes(accounts.pool_state);
         let (expected_bin_pda, _) = arlex_lang::find_program_address(
             &[b"bins", pool_key_for_bin.as_ref()],
-            ctx.program_id,
+            program_id,
         );
-        if ctx.remaining_accounts[bin_account_idx].address().as_ref() != expected_bin_pda.as_ref() {
+        if remaining_accounts[bin_account_idx].address().as_ref() != expected_bin_pda.as_ref() {
             return Err(ProgramError::InvalidSeeds);
         }
-        let bin_array = BinArray::load_mut(&ctx.remaining_accounts[bin_account_idx], ctx.program_id)?;
+        let bin_array = BinArray::load_mut(&remaining_accounts[bin_account_idx], program_id)?;
         concentrated::distribute_to_bins(
             bin_array,
             deposit_a,
@@ -149,30 +215,30 @@ pub fn handler(
     }
 
     // --- Initialize or update LpPosition ---
-    let provider_key = pubkey_bytes(ctx.accounts.provider);
-    let pool_key = pubkey_bytes(ctx.accounts.pool_state);
+    let provider_key = pubkey_bytes(accounts.authority);
+    let pool_key = pubkey_bytes(accounts.pool_state);
     let clock = Clock::get()?;
 
     // Check if LpPosition already exists (data_len > 0 means initialized)
-    let lp_data_len = ctx.accounts.lp_position.data_len();
+    let lp_data_len = accounts.lp_position.data_len();
     if lp_data_len == 0 {
         // Create new LpPosition PDA
         let (lp_pda, lp_bump) = arlex_lang::find_program_address(
             &[b"lp", pool_key.as_ref(), provider_key.as_ref()],
-            ctx.program_id,
+            program_id,
         );
-        if ctx.accounts.lp_position.address().as_ref() != lp_pda.as_ref() {
+        if accounts.lp_position.address().as_ref() != lp_pda.as_ref() {
             return Err(ProgramError::InvalidSeeds);
         }
 
         let rent = pinocchio::sysvars::rent::Rent::get()?;
         let lamports = rent.minimum_balance(LpPosition::SPACE);
         arlex_lang::system::instructions::CreateAccount {
-            from: ctx.accounts.payer,
-            to: ctx.accounts.lp_position,
+            from: accounts.payer,
+            to: accounts.lp_position,
             lamports,
             space: LpPosition::SPACE as u64,
-            owner: ctx.program_id,
+            owner: program_id,
         }.invoke_signed(&[Signer::from(&[
             Seed::from(b"lp" as &[u8]),
             Seed::from(pool_key.as_ref()),
@@ -180,7 +246,7 @@ pub fn handler(
             Seed::from(&[lp_bump]),
         ])])?;
 
-        let lp = LpPosition::init(ctx.accounts.lp_position, ctx.program_id)?;
+        let lp = LpPosition::init(accounts.lp_position, program_id)?;
         lp.pool = pool_key;
         lp.owner = provider_key;
         lp.shares = shares;
@@ -188,7 +254,7 @@ pub fn handler(
         lp.bump = lp_bump;
     } else {
         // Update existing position
-        let lp = LpPosition::load_mut(ctx.accounts.lp_position, ctx.program_id)?;
+        let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
         // SECURITY: Verify LpPosition belongs to this provider
         if lp.owner != provider_key {
             return Err(ProgramError::from(DexError::Unauthorized));
@@ -202,22 +268,32 @@ pub fn handler(
     }
 
     // --- Interactions: transfer tokens from provider to vaults ---
+    // User-signed path: empty signer slice (authority is a transaction signer).
+    // PDA-signed path: caller-supplied seeds authorize the PDA-owned ATA.
     if deposit_a > 0 {
-        arlex_lang::token::instructions::Transfer {
-            from: ctx.accounts.provider_token_a,
-            to: ctx.accounts.vault_a,
-            authority: ctx.accounts.provider,
+        let transfer_a = arlex_lang::token::instructions::Transfer {
+            from: accounts.provider_token_a,
+            to: accounts.vault_a,
+            authority: accounts.authority,
             amount: deposit_a,
-        }.invoke()?;
+        };
+        match authority_signer_seeds {
+            Some(seeds) => transfer_a.invoke_signed(seeds)?,
+            None => transfer_a.invoke()?,
+        }
     }
 
     if deposit_b > 0 {
-        arlex_lang::token::instructions::Transfer {
-            from: ctx.accounts.provider_token_b,
-            to: ctx.accounts.vault_b,
-            authority: ctx.accounts.provider,
+        let transfer_b = arlex_lang::token::instructions::Transfer {
+            from: accounts.provider_token_b,
+            to: accounts.vault_b,
+            authority: accounts.authority,
             amount: deposit_b,
-        }.invoke()?;
+        };
+        match authority_signer_seeds {
+            Some(seeds) => transfer_b.invoke_signed(seeds)?,
+            None => transfer_b.invoke()?,
+        }
     }
 
     // --- Emit event ---

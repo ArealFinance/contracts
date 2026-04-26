@@ -52,14 +52,82 @@ pub struct ZapLiquidity<'info> {
     pub system_program: &'info AccountView,
 }
 
+/// Decoupled view of `ZapLiquidity` accounts used by `zap_liquidity_internal`.
+///
+/// Allows reuse of the core zap logic from any handler whose accounts can
+/// project into this shape (user-signed `zap_liquidity` or PDA-signed
+/// alternative callers added in later layers).
+pub(crate) struct ZapLiquidityAccountsView<'info> {
+    pub authority: &'info AccountView,
+    pub payer: &'info AccountView,
+    pub dex_config: &'info AccountView,
+    pub pool_state: &'info AccountView,
+    pub lp_position: &'info AccountView,
+    pub provider_token_a: &'info AccountView,
+    pub provider_token_b: &'info AccountView,
+    pub vault_a: &'info AccountView,
+    pub vault_b: &'info AccountView,
+    pub areal_fee_account: &'info AccountView,
+}
+
+impl<'info> ZapLiquidity<'info> {
+    pub(crate) fn view(&self) -> ZapLiquidityAccountsView<'info> {
+        ZapLiquidityAccountsView {
+            authority: self.provider,
+            payer: self.payer,
+            dex_config: self.dex_config,
+            pool_state: self.pool_state,
+            lp_position: self.lp_position,
+            provider_token_a: self.provider_token_a,
+            provider_token_b: self.provider_token_b,
+            vault_a: self.vault_a,
+            vault_b: self.vault_b,
+            areal_fee_account: self.areal_fee_account,
+        }
+    }
+}
+
 pub fn handler(
     ctx: Context<ZapLiquidity>,
     amount_a: u64,
     amount_b: u64,
     min_shares: u128,
 ) -> Result<()> {
-    let config = DexConfig::load(ctx.accounts.dex_config, ctx.program_id)?;
-    let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
+    zap_liquidity_internal(
+        &ctx.accounts.view(),
+        ctx.remaining_accounts,
+        ctx.program_id,
+        amount_a,
+        amount_b,
+        min_shares,
+        None,
+    )
+}
+
+/// Core zap-liquidity logic — usable by user-signed `zap_liquidity` and by
+/// PDA-signed alternative callers (e.g. future layers passing
+/// `Some(&[Signer])`).
+///
+/// Internal helper — do NOT use as instruction entrypoint. Caller must
+/// validate access control before invoking.
+///
+/// `authority_signer_seeds`:
+///   - `None` — authority is a transaction signer (user-signed path); the
+///     inbound `provider_token_* -> vault_*` transfers are invoked without
+///     seeds.
+///   - `Some(seeds)` — authority is a PDA; the inbound transfers are invoked
+///     with the supplied signer seeds.
+pub(crate) fn zap_liquidity_internal<'info>(
+    accounts: &ZapLiquidityAccountsView<'info>,
+    remaining_accounts: &'info [AccountView],
+    program_id: &Address,
+    amount_a: u64,
+    amount_b: u64,
+    min_shares: u128,
+    authority_signer_seeds: Option<&[Signer]>,
+) -> Result<()> {
+    let config = DexConfig::load(accounts.dex_config, program_id)?;
+    let pool = PoolState::load_mut(accounts.pool_state, program_id)?;
 
     // --- Checks ---
     if !config.is_active {
@@ -78,20 +146,20 @@ pub fn handler(
     }
 
     // SECURITY: Validate vaults match pool state
-    validate_vault(ctx.accounts.vault_a, &pool.vault_a)?;
-    validate_vault(ctx.accounts.vault_b, &pool.vault_b)?;
+    validate_vault(accounts.vault_a, &pool.vault_a)?;
+    validate_vault(accounts.vault_b, &pool.vault_b)?;
 
     // Validate areal_fee_account
-    if ctx.accounts.areal_fee_account.address().as_ref() != config.areal_fee_destination.as_ref() {
+    if accounts.areal_fee_account.address().as_ref() != config.areal_fee_destination.as_ref() {
         return Err(ProgramError::from(DexError::InvalidTokenAccount));
     }
 
     // OT treasury validation
     if pool.has_ot_treasury {
-        if ctx.remaining_accounts.is_empty() {
+        if remaining_accounts.is_empty() {
             return Err(ProgramError::from(DexError::MissingOtTreasuryAccount));
         }
-        let ot_fee_account = &ctx.remaining_accounts[0];
+        let ot_fee_account = &remaining_accounts[0];
         if ot_fee_account.address().as_ref() != pool.ot_treasury_fee_destination.as_ref() {
             return Err(ProgramError::from(DexError::OtTreasuryAccountMismatch));
         }
@@ -273,28 +341,28 @@ pub fn handler(
         .checked_add(fee_ot_total).ok_or(ProgramError::from(DexError::MathOverflow))?;
 
     // --- Initialize or update LpPosition ---
-    let provider_key = pubkey_bytes(ctx.accounts.provider);
-    let pool_key = pubkey_bytes(ctx.accounts.pool_state);
+    let provider_key = pubkey_bytes(accounts.authority);
+    let pool_key = pubkey_bytes(accounts.pool_state);
     let clock = Clock::get()?;
 
-    let lp_data_len = ctx.accounts.lp_position.data_len();
+    let lp_data_len = accounts.lp_position.data_len();
     if lp_data_len == 0 {
         let (lp_pda, lp_bump) = arlex_lang::find_program_address(
             &[b"lp", pool_key.as_ref(), provider_key.as_ref()],
-            ctx.program_id,
+            program_id,
         );
-        if ctx.accounts.lp_position.address().as_ref() != lp_pda.as_ref() {
+        if accounts.lp_position.address().as_ref() != lp_pda.as_ref() {
             return Err(ProgramError::InvalidSeeds);
         }
 
         let rent = pinocchio::sysvars::rent::Rent::get()?;
         let lamports = rent.minimum_balance(LpPosition::SPACE);
         arlex_lang::system::instructions::CreateAccount {
-            from: ctx.accounts.payer,
-            to: ctx.accounts.lp_position,
+            from: accounts.payer,
+            to: accounts.lp_position,
             lamports,
             space: LpPosition::SPACE as u64,
-            owner: ctx.program_id,
+            owner: program_id,
         }.invoke_signed(&[Signer::from(&[
             Seed::from(b"lp" as &[u8]),
             Seed::from(pool_key.as_ref()),
@@ -302,14 +370,14 @@ pub fn handler(
             Seed::from(&[lp_bump]),
         ])])?;
 
-        let lp = LpPosition::init(ctx.accounts.lp_position, ctx.program_id)?;
+        let lp = LpPosition::init(accounts.lp_position, program_id)?;
         lp.pool = pool_key;
         lp.owner = provider_key;
         lp.shares = shares;
         lp.last_update_ts = clock.unix_timestamp;
         lp.bump = lp_bump;
     } else {
-        let lp = LpPosition::load_mut(ctx.accounts.lp_position, ctx.program_id)?;
+        let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
         // SECURITY: Verify LpPosition belongs to this provider
         if lp.owner != provider_key {
             return Err(ProgramError::from(DexError::Unauthorized));
@@ -323,30 +391,40 @@ pub fn handler(
     }
 
     // --- Interactions: transfer tokens from provider to vaults ---
-    // Transfer the total user input (amount_a + amount_b), the internal swap is virtual
+    // Transfer the total user input (amount_a + amount_b), the internal swap is virtual.
+    // User-signed path: empty signer slice (authority is a transaction signer).
+    // PDA-signed path: caller-supplied seeds authorize the PDA-owned ATA.
     if amount_a > 0 {
-        arlex_lang::token::instructions::Transfer {
-            from: ctx.accounts.provider_token_a,
-            to: ctx.accounts.vault_a,
-            authority: ctx.accounts.provider,
+        let transfer_a = arlex_lang::token::instructions::Transfer {
+            from: accounts.provider_token_a,
+            to: accounts.vault_a,
+            authority: accounts.authority,
             amount: amount_a,
-        }.invoke()?;
+        };
+        match authority_signer_seeds {
+            Some(seeds) => transfer_a.invoke_signed(seeds)?,
+            None => transfer_a.invoke()?,
+        }
     }
 
     if amount_b > 0 {
-        arlex_lang::token::instructions::Transfer {
-            from: ctx.accounts.provider_token_b,
-            to: ctx.accounts.vault_b,
-            authority: ctx.accounts.provider,
+        let transfer_b = arlex_lang::token::instructions::Transfer {
+            from: accounts.provider_token_b,
+            to: accounts.vault_b,
+            authority: accounts.authority,
             amount: amount_b,
-        }.invoke()?;
+        };
+        match authority_signer_seeds {
+            Some(seeds) => transfer_b.invoke_signed(seeds)?,
+            None => transfer_b.invoke()?,
+        }
     }
 
     // Transfer protocol fees from vault (RWT side)
     let pool_bump_arr = [pool.bump];
 
     if fee_protocol_total > 0 {
-        let rwt_vault = if is_rwt_mint(&pool.token_a_mint) { ctx.accounts.vault_a } else { ctx.accounts.vault_b };
+        let rwt_vault = if is_rwt_mint(&pool.token_a_mint) { accounts.vault_a } else { accounts.vault_b };
         let seeds = [
             Seed::from(b"pool" as &[u8]),
             Seed::from(pool.token_a_mint.as_ref()),
@@ -355,15 +433,15 @@ pub fn handler(
         ];
         arlex_lang::token::instructions::Transfer {
             from: rwt_vault,
-            to: ctx.accounts.areal_fee_account,
-            authority: ctx.accounts.pool_state,
+            to: accounts.areal_fee_account,
+            authority: accounts.pool_state,
             amount: fee_protocol_total,
         }.invoke_signed(&[Signer::from(&seeds)])?;
     }
 
     if fee_ot_total > 0 {
-        let ot_fee_account = &ctx.remaining_accounts[0];
-        let rwt_vault = if is_rwt_mint(&pool.token_a_mint) { ctx.accounts.vault_a } else { ctx.accounts.vault_b };
+        let ot_fee_account = &remaining_accounts[0];
+        let rwt_vault = if is_rwt_mint(&pool.token_a_mint) { accounts.vault_a } else { accounts.vault_b };
         let seeds = [
             Seed::from(b"pool" as &[u8]),
             Seed::from(pool.token_a_mint.as_ref()),
@@ -373,7 +451,7 @@ pub fn handler(
         arlex_lang::token::instructions::Transfer {
             from: rwt_vault,
             to: ot_fee_account,
-            authority: ctx.accounts.pool_state,
+            authority: accounts.pool_state,
             amount: fee_ot_total,
         }.invoke_signed(&[Signer::from(&seeds)])?;
     }
