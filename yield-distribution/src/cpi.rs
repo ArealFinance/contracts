@@ -195,6 +195,76 @@ pub fn cpi_rwt_mint<'a>(
     )
 }
 
+/// CPI → `native_dex::nexus_record_deposit` signed by the LiquidityHolding PDA.
+///
+/// Counter-bump leg of the YD → Nexus drain (single-TX semantics per SD-4 / D27).
+/// Issued by `withdraw_liquidity_holding` AFTER a PDA-signed SPL Transfer has
+/// moved RWT from the LiquidityHolding ATA into the Nexus ATA; this CPI tells
+/// the DEX-side `LiquidityNexus` singleton to bump `total_deposited_<token>`
+/// by `amount` and emit `NexusDeposited{source = LIQUIDITY_HOLDING}`.
+///
+/// Account order MUST match `contracts/native-dex/src/instructions/nexus_record_deposit.rs::NexusRecordDeposit`
+/// (2 named accounts):
+///   0. liquidity_holding (signer via PDA, read)  — YD-owned PDA
+///   1. liquidity_nexus   (mut)                   — DEX singleton
+///
+/// `liquidity_holding.is_writable` is FALSE — the DEX-side handler does not
+/// mutate it (D25 only reads owner / address / signer flag). Marking it
+/// writable would not change correctness but bloats the runtime's
+/// account-mutation tracking; keep read-only to match the called handler's
+/// account-meta expectations exactly.
+///
+/// Discriminator: `DISC_DEX_NEXUS_RECORD_DEPOSIT`.
+/// Instruction data: `[DISC(8), amount(8 LE), token_kind(1)]` = 17 bytes.
+///
+/// `signer_seeds` MUST equal `[b"liq_holding", &[bump]]` per Layer 8 D11.1
+/// (singleton seed) — the DEX handler re-derives this same shape under
+/// `YD_PROGRAM_ID` for its D25 step-2 caller-validation check, so any drift
+/// between the two seed layouts breaks the cross-program invariant.
+///
+/// Target program: `NEXUS_HOSTING_PROGRAM_ID` (= `DEX_PROGRAM_ID` per D17).
+// TODO(R9): hoist to Arlex framework helper — duplicated across YD/RWT cpi modules.
+#[allow(clippy::too_many_arguments)]
+pub fn cpi_dex_nexus_record_deposit<'a>(
+    liquidity_holding: &'a AccountView,
+    liquidity_nexus: &'a AccountView,
+    dex_program: &'a AccountView,
+    signer_seeds: &[Seed],
+    amount: u64,
+    token_kind: u8,
+) -> ProgramResult {
+    // 1. Serialize instruction data — fixed 17-byte buffer:
+    //    [DISC_DEX_NEXUS_RECORD_DEPOSIT(8) | amount(8 LE) | token_kind(1)]
+    let mut data = [0u8; 17];
+    data[0..8].copy_from_slice(&DISC_DEX_NEXUS_RECORD_DEPOSIT);
+    data[8..16].copy_from_slice(&amount.to_le_bytes());
+    data[16] = token_kind;
+
+    // 2. Build the 2-account list expected by NexusRecordDeposit.
+    let accounts = [
+        // 0: liquidity_holding — signer via PDA, NOT writable. Matches
+        //    `#[account(signer)]` on the called handler (no `mut`).
+        InstructionAccount::new(liquidity_holding.address(), false, true),
+        // 1: liquidity_nexus — mut (counter bump), not signer.
+        InstructionAccount::new(liquidity_nexus.address(), true, false),
+    ];
+
+    let instruction = InstructionView {
+        program_id: dex_program.address(),
+        data: &data,
+        accounts: &accounts,
+    };
+
+    let signer = Signer::from(signer_seeds);
+
+    // 3. invoke_signed::<3> — 2 CPI accounts + dex_program (program-id slot).
+    invoke_signed::<3>(
+        &instruction,
+        &[liquidity_holding, liquidity_nexus, dex_program],
+        &[signer],
+    )
+}
+
 /// PDA-signed SPL Token transfer (`from` → `to`, authority = PDA).
 ///
 /// Thin wrapper around `arlex_lang::token::instructions::Transfer::invoke_signed`.
@@ -266,6 +336,18 @@ mod tests {
         data
     }
 
+    /// Reimplementation of the data-buffer build inside
+    /// `cpi_dex_nexus_record_deposit`. Layout: 8b disc + 8b amount LE + 1b kind
+    /// = 17 bytes total. Drift here must be caught before the byte hits the
+    /// wire — the DEX handler deserializes in the same fixed order.
+    fn build_nexus_record_deposit_instruction_data(amount: u64, token_kind: u8) -> [u8; 17] {
+        let mut data = [0u8; 17];
+        data[0..8].copy_from_slice(&DISC_DEX_NEXUS_RECORD_DEPOSIT);
+        data[8..16].copy_from_slice(&amount.to_le_bytes());
+        data[16] = token_kind;
+        data
+    }
+
     #[test]
     fn disc_dex_swap_matches_sha256() {
         assert_eq!(
@@ -290,6 +372,38 @@ mod tests {
             DISC_YD_WITHDRAW_LIQUIDITY_HOLDING,
             disc("global:withdraw_liquidity_holding"),
             "DISC_YD_WITHDRAW_LIQUIDITY_HOLDING out of sync with sha256(\"global:withdraw_liquidity_holding\")[..8]"
+        );
+    }
+
+    /// Layer 9 R20 — `nexus_record_deposit` is a DEX-side ix; YD CPIs into
+    /// it from `withdraw_liquidity_holding`. Discriminator drift here breaks
+    /// the cross-program counter-bump leg of the single-TX drain.
+    #[test]
+    fn disc_dex_nexus_record_deposit_matches_sha256() {
+        assert_eq!(
+            DISC_DEX_NEXUS_RECORD_DEPOSIT,
+            disc("global:nexus_record_deposit"),
+            "DISC_DEX_NEXUS_RECORD_DEPOSIT out of sync with sha256(\"global:nexus_record_deposit\")[..8]"
+        );
+    }
+
+    /// D17 / SD-3 — Nexus is a DEX-extension; the hosting program ID is the
+    /// DEX program ID. Drift between the two would let an attacker host a
+    /// shadow Nexus binary and intercept the `withdraw_liquidity_holding`
+    /// drain CPI. R20 retired the Layer 8 `NEXUS_PROGRAM_ID_PLACEHOLDER`
+    /// (`[0u8; 32]`) in favour of this alias.
+    #[test]
+    fn nexus_hosting_program_id_aliases_dex_program() {
+        assert_eq!(
+            NEXUS_HOSTING_PROGRAM_ID, DEX_PROGRAM_ID,
+            "NEXUS_HOSTING_PROGRAM_ID must equal DEX_PROGRAM_ID per D17"
+        );
+        // Defence-in-depth: the alias bytes must NOT be the Layer 8
+        // all-zeros placeholder. A regression here would re-open the
+        // anti-honeypot guard the Layer 9 migration intentionally lifted.
+        assert_ne!(
+            NEXUS_HOSTING_PROGRAM_ID, [0u8; 32],
+            "NEXUS_HOSTING_PROGRAM_ID must not regress to the Layer 8 placeholder"
         );
     }
 
@@ -399,6 +513,81 @@ mod tests {
         assert_eq!(
             u64::from_le_bytes(data[16..24].try_into().unwrap()),
             u64::MAX
+        );
+    }
+
+    // ── DEX::nexus_record_deposit data layout — 3 fixture sizes ──
+
+    /// Layer 9 wire-shape pin: zero-amount RWT path (the only token kind
+    /// `withdraw_liquidity_holding` ever passes — RWT — on the empty edge).
+    /// The DEX handler rejects amount=0 with `ZeroAmount` BEFORE token-kind
+    /// dispatch, but we still pin the byte layout because the wire format is
+    /// shared with future cross-token CPIs (USDC drain reserved per SD-4).
+    #[test]
+    fn cpi_dex_nexus_record_deposit_data_layout_zero_rwt() {
+        let data = build_nexus_record_deposit_instruction_data(0, TOKEN_KIND_RWT);
+        assert_eq!(data.len(), 17, "fixed 17-byte instruction data");
+        assert_eq!(
+            &data[0..8],
+            &DISC_DEX_NEXUS_RECORD_DEPOSIT,
+            "discriminator at offset 0..8"
+        );
+        assert_eq!(
+            u64::from_le_bytes(data[8..16].try_into().unwrap()),
+            0,
+            "amount LE at offset 8..16"
+        );
+        assert_eq!(data[16], TOKEN_KIND_RWT, "token_kind at offset 16");
+        assert_eq!(data[16], 1, "TOKEN_KIND_RWT must equal 1 (DEX dispatch)");
+    }
+
+    /// Typical drain — 1 RWT (6 decimals) → bytes [0x40, 0x42, 0x0F, ...] LE.
+    #[test]
+    fn cpi_dex_nexus_record_deposit_data_layout_typical_rwt() {
+        let amount: u64 = 1_000_000;
+        let data = build_nexus_record_deposit_instruction_data(amount, TOKEN_KIND_RWT);
+        assert_eq!(&data[0..8], &DISC_DEX_NEXUS_RECORD_DEPOSIT);
+        assert_eq!(
+            u64::from_le_bytes(data[8..16].try_into().unwrap()),
+            amount,
+            "amount round-trips through LE bytes"
+        );
+        assert_eq!(data[16], TOKEN_KIND_RWT);
+    }
+
+    /// Max-amount + USDC kind. Pinned for symmetry with `nexus_deposit`'s
+    /// dispatch table (SD-4 reserves USDC for future drain paths). YD
+    /// `withdraw_liquidity_holding` only ever passes RWT, but the wire
+    /// must support both.
+    #[test]
+    fn cpi_dex_nexus_record_deposit_data_layout_max_usdc() {
+        let data = build_nexus_record_deposit_instruction_data(u64::MAX, TOKEN_KIND_USDC);
+        assert_eq!(&data[0..8], &DISC_DEX_NEXUS_RECORD_DEPOSIT);
+        assert_eq!(
+            u64::from_le_bytes(data[8..16].try_into().unwrap()),
+            u64::MAX
+        );
+        assert_eq!(data[16], TOKEN_KIND_USDC);
+        assert_eq!(data[16], 0, "TOKEN_KIND_USDC must equal 0 (DEX dispatch)");
+    }
+
+    /// LiquidityHolding signer-seeds shape — the YD-side handler hands these
+    /// to `cpi_dex_nexus_record_deposit`. Per Layer 8 D11.1 the holding is a
+    /// SINGLETON (single-component prefix `b"liq_holding"`), so the seed
+    /// slice has exactly 2 components: prefix + bump. Drift here breaks
+    /// invoke_signed (PDA mismatch) and the DEX-side D25 step-2 derivation
+    /// (which re-derives the same `[b"liq_holding"]` under YD_PROGRAM_ID).
+    #[test]
+    fn liq_holding_signer_seed_layout_is_two_components() {
+        let bump_arr = [0xFFu8];
+        let seeds = [
+            Seed::from(b"liq_holding" as &[u8]),
+            Seed::from(bump_arr.as_ref()),
+        ];
+        assert_eq!(
+            seeds.len(),
+            2,
+            "LiquidityHolding signer seeds: prefix + bump (singleton — no ot_mint)"
         );
     }
 

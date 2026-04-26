@@ -56,7 +56,17 @@ pub enum YdError {
     ZeroDestination,
     #[msg("LiquidityHolding PDA already initialized")]
     LiquidityHoldingAlreadyInitialized,
-    #[msg("Layer 9 Nexus authority not yet initialized — withdraw is disabled")]
+    #[msg("LiquidityHolding PDA not yet initialized")]
+    LiquidityHoldingNotInitialized,
+    #[msg("LiquidityHolding withdraw is paused (is_active == false)")]
+    LiquidityHoldingNotActive,
+    #[msg("liquidity_holding_ata mint or owner mismatch")]
+    InvalidLiquidityHoldingAta,
+    #[msg("Insufficient LiquidityHolding ATA balance for the requested withdraw amount")]
+    InsufficientLiquidityHoldingBalance,
+    #[msg("dex_program does not match pinned NEXUS_HOSTING_PROGRAM_ID")]
+    InvalidNexusHostingProgram,
+    #[msg("Legacy: Layer 9 Nexus not initialized — superseded by R20 (kept for ABI stability)")]
     NexusNotInitialized,
     #[msg("dex_program does not match pinned DEX_PROGRAM_ID")]
     InvalidDexProgram,

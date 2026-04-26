@@ -53,16 +53,22 @@ pub const RWT_ENGINE_PROGRAM_ID: [u8; 32] = [
     0x49, 0xa1, 0x15, 0xcd, 0x39, 0xdb, 0x48, 0x1f,
 ];
 
-// Layer 9 Nexus program ID — placeholder (all zeros) until Layer 9 deploys.
-// `withdraw_liquidity_holding` checks against this constant: while it remains
-// zeros, every call reverts with `NexusNotInitialized`. After Layer 9 vanity
-// allocation, the bytes here MUST be replaced with the real Nexus program ID.
+// Layer 9 Nexus hosting program — alias of `DEX_PROGRAM_ID` (D17 / SD-3).
+// The Nexus is implemented as an extension of the DEX program; the YD
+// `withdraw_liquidity_holding` handler CPIs the DEX program (not a separate
+// Nexus binary) for the `nexus_record_deposit` counter-bump leg.
 //
-// MAINNET-REPLACE: this is a Layer 8 placeholder. Layer 9 deployment will
-// pin the real Nexus program ID here AND ungate the placeholder check below.
-// Until then the LiquidityHolding RWT ATA is a one-way sink (deposit only)
-// — anti-honeypot guarantee per D4.
-pub const NEXUS_PROGRAM_ID_PLACEHOLDER: [u8; 32] = [0u8; 32];
+// Layer 8 shipped this constant as `NEXUS_PROGRAM_ID_PLACEHOLDER = [0u8; 32]`
+// behind an unconditional `NexusNotInitialized` revert (anti-honeypot guard
+// per D4 — the LiquidityHolding RWT ATA was a one-way sink). Layer 9
+// migration R20 retires the placeholder and pins the bytes to the canonical
+// DEX vanity ID; the handler now executes the real PDA-signed Transfer + CPI.
+//
+// Identical bytes to `DEX_PROGRAM_ID` above; aliased here so call sites in
+// `withdraw_liquidity_holding` read against the *semantic* identity (Nexus
+// hosting program) rather than the literal DEX program. Drift between the
+// two is caught by the parity test in `cpi.rs::tests`.
+pub const NEXUS_HOSTING_PROGRAM_ID: [u8; 32] = DEX_PROGRAM_ID;
 
 // ----- CPI discriminators -----
 //
@@ -77,11 +83,27 @@ pub const DISC_DEX_SWAP: [u8; 8] = [0xf8, 0xc6, 0x9e, 0x91, 0xe1, 0x75, 0x87, 0x
 /// sha256("global:mint_rwt")[..8]
 pub const DISC_RWT_MINT_RWT: [u8; 8] = [0x62, 0x20, 0x73, 0xde, 0x44, 0x0c, 0xa1, 0xa2];
 
-/// `yield_distribution::withdraw_liquidity_holding` (placeholder for Layer 9 Nexus)
+/// `yield_distribution::withdraw_liquidity_holding` (own ix; same wire shape
+/// as Layer 8 placeholder — only the body changed in Layer 9).
 /// sha256("global:withdraw_liquidity_holding")[..8]
 pub const DISC_YD_WITHDRAW_LIQUIDITY_HOLDING: [u8; 8] = [
     0x07, 0x14, 0x13, 0x12, 0xe4, 0x2e, 0xb3, 0x36,
 ];
+
+/// `native_dex::nexus_record_deposit` (Layer 9 Nexus counter-bump CPI).
+/// sha256("global:nexus_record_deposit")[..8]
+pub const DISC_DEX_NEXUS_RECORD_DEPOSIT: [u8; 8] = [
+    0x88, 0x20, 0x8d, 0x28, 0x72, 0xf6, 0x1b, 0x97,
+];
+
+// ----- Token-kind dispatch (mirrors native-dex::TOKEN_KIND_*) -----
+//
+// `nexus_record_deposit` accepts a 1-byte `token_kind` (USDC / RWT) for
+// symmetry with `nexus_deposit`. YD's `withdraw_liquidity_holding` only ever
+// drains RWT (the 15% liquidity-share parked from `claim_yield`), but pinning
+// both kinds here keeps the dispatch table in lock-step with the DEX side.
+pub const TOKEN_KIND_USDC: u8 = 0;
+pub const TOKEN_KIND_RWT: u8 = 1;
 
 // ----- Deployment-time pins (REPLACE for each environment) -----
 //

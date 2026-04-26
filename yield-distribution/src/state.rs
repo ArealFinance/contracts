@@ -83,16 +83,21 @@ const _: () = assert!(core::mem::size_of::<ClaimStatus>() == 73);
 // PDA Seed: ["liq_holding"] (singleton, per D11.1)
 //
 // Receives the 15% liquidity-share splitted by `rwt_engine::claim_yield`.
-// Funds park here until Layer 9 Nexus drains them via `withdraw_liquidity_holding`
-// CPI. Until then the placeholder ix unconditionally reverts with
-// `NexusNotInitialized` (R10 — anti-honeypot per D4).
+// Funds park here; `withdraw_liquidity_holding` (Layer 9 R20) drains them
+// atomically into the Nexus ATA + bumps the DEX-side counter via the
+// `nexus_record_deposit` CPI (single-TX semantics per SD-4 / D27).
 //
 // `total_received` / `total_withdrawn` are running observability counters
 // (running sum since deployment); `last_funded_slot` records the most recent
 // claim_yield split funding event.
 //
-// `_reserved` keeps room for Layer 9 fields (e.g. nexus authority, allocation
-// strategy) without a state migration.
+// Layer 9 carved two 8-byte tracking slots out of the 32-byte `_reserved`
+// future-proofing block (16 bytes still reserved for later Layer 9 fields):
+//   * `last_withdrawn_slot`   — slot at which the most recent drain landed
+//   * `last_withdrawn_amount` — amount drained in the most recent call
+// `total_withdrawn` (already present from Layer 8) doubles as the cumulative
+// counter that the Layer 9 architecture spec calls `cumulative_withdrawn`
+// — same semantics, name preserved for byte-layout stability.
 // =============================================================================
 
 #[account]
@@ -100,18 +105,25 @@ pub struct LiquidityHolding {
     pub bump: u8,                      // 1
     pub initialized: bool,             // 1 — guards against double-init
     pub total_received: u64,           // 8 — cumulative deposits (observability)
-    pub total_withdrawn: u64,          // 8 — cumulative withdrawals (Layer 9 tracker)
+    pub total_withdrawn: u64,          // 8 — cumulative withdrawals (== cumulative_withdrawn)
     pub last_funded_slot: u64,         // 8 — slot of last claim_yield split
-    pub _reserved: [u8; 32],           // 32 — future-proofing for Layer 9 fields
+    pub last_withdrawn_slot: u64,      // 8 — slot of last withdraw_liquidity_holding (Layer 9)
+    pub last_withdrawn_amount: u64,    // 8 — amount of last withdraw_liquidity_holding (Layer 9)
+    pub _reserved: [u8; 16],           // 16 — future-proofing for further Layer 9 fields
 }
-// SIZE = 58, SPACE = 8 + 58 = 66
+// SIZE = 58 (1+1+8+8+8+8+8+16), SPACE = 8 + 58 = 66 — UNCHANGED across L8→L9.
 const _: () = assert!(core::mem::size_of::<LiquidityHolding>() == 58);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Pin LiquidityHolding data layout: 1+1+8+8+8+32 = 58 bytes (66 with disc).
+    /// Pin LiquidityHolding data layout: 1+1+8+8+8+8+8+16 = 58 bytes
+    /// (66 with disc). The Layer 9 R20 migration carved two 8-byte slots
+    /// (`last_withdrawn_slot`, `last_withdrawn_amount`) out of the original
+    /// 32-byte `_reserved` block, leaving 16 bytes still reserved. Total
+    /// size invariant is preserved across the Layer 8 → Layer 9 migration —
+    /// no rent / SPACE bump, no on-chain account migration needed.
     #[test]
     fn liquidity_holding_size_pinned_at_58() {
         assert_eq!(core::mem::size_of::<LiquidityHolding>(), 58);

@@ -1,7 +1,7 @@
 //! Yield Distribution — perpetual merkle-based RWT yield streams with per-claimant vesting.
 //!
-//! 13 instructions (Layer 8 added `convert_to_rwt` + Layer 9 placeholders),
-//! 4 state accounts, 12 events.
+//! 13 instructions (Layer 8 added `convert_to_rwt` + Layer 9 R20 wired the
+//! real `withdraw_liquidity_holding` body), 4 state accounts, 12 events.
 //!
 //! Built on the Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/yield-distribution.mdx for the full specification.
@@ -142,8 +142,11 @@ pub mod yield_distribution {
         crate::instructions::initialize_liquidity_holding::handler(ctx)
     }
 
-    /// Layer 9 Nexus drain ix — placeholder for Layer 8: every call reverts
-    /// with `NexusNotInitialized` until the Nexus program ID is pinned.
+    /// Authority-gated atomic drain of the singleton `LiquidityHolding` RWT
+    /// ATA into the DEX-side Nexus ATA, plus a counter-bump CPI to
+    /// `dex::nexus_record_deposit` (single-TX semantics per SD-4 / D27).
+    /// Layer 9 R20 — supersedes the Layer 8 placeholder body. Wire shape
+    /// (discriminator, account count, account order) unchanged from L8.
     pub fn withdraw_liquidity_holding(
         ctx: Context<WithdrawLiquidityHolding>,
         amount: u64,

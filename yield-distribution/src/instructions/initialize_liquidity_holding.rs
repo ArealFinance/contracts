@@ -77,7 +77,11 @@ pub fn handler(ctx: Context<InitializeLiquidityHolding>) -> Result<()> {
     holding.total_received = 0;
     holding.total_withdrawn = 0;
     holding.last_funded_slot = 0;
-    holding._reserved = [0u8; 32];
+    // Layer 9 R20 — zero-init the per-drain tracking slots carved out of the
+    // Layer 8 32-byte `_reserved` block. SPACE / data layout unchanged.
+    holding.last_withdrawn_slot = 0;
+    holding.last_withdrawn_amount = 0;
+    holding._reserved = [0u8; 16];
 
     // --- Create RWT ATA (wallet = liquidity_holding PDA) ---
     //

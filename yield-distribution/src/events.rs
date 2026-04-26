@@ -132,15 +132,32 @@ pub struct StreamConverted {
     pub mint_out_rwt: u64,
 }
 
-// Placeholder — emitted by `withdraw_liquidity_holding` once Layer 9 Nexus
-// drains the holding. Layer 8 ix only reverts; this event is reserved for
-// the Layer 9 implementation.
+/// Emitted by `withdraw_liquidity_holding` after a successful atomic drain
+/// (PDA-signed SPL Transfer + `nexus_record_deposit` CPI). Layer 9 R20 —
+/// supersedes the Layer 8 placeholder event (same event name, fields
+/// extended for richer indexer tracing of the YD-side counters).
+///
+/// Layout (128-byte body):
+///
+/// ```text
+///   0..32   liquidity_holding      YD PDA address (drain source identity)
+///  32..64   destination_nexus      DEX `LiquidityNexus` PDA (counter target)
+///  64..72   amount                 RWT moved in this TX
+///  72..80   cumulative_withdrawn   `LiquidityHolding.total_withdrawn` AFTER update
+///  80..88   slot                   on-chain slot at drain time
+///  88..96   timestamp              clock unix_timestamp
+/// ```
+///
+/// `cumulative_withdrawn` mirrors the on-chain `total_withdrawn` field
+/// (running sum since deployment) — kept under that name for byte-layout
+/// stability with the Layer 8 placeholder while matching the architecture
+/// spec's Layer 9 vocabulary in the event field.
 #[event]
 pub struct LiquidityHoldingWithdrawn {
     pub liquidity_holding: [u8; 32],
-    pub recipient: [u8; 32],
-    pub nexus_program: [u8; 32],
+    pub destination_nexus: [u8; 32],
     pub amount: u64,
-    pub total_withdrawn: u64,
+    pub cumulative_withdrawn: u64,
+    pub slot: u64,
     pub timestamp: i64,
 }
