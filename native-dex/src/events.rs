@@ -115,3 +115,19 @@ pub struct LiquidityShifted {
     pub new_upper: i32,
     pub timestamp: i64,
 }
+
+/// Emitted by `compound_yield` when the pool PDA successfully claims vested
+/// RWT from a Yield Distribution distributor and folds the received amount
+/// back into `reserve_<rwt_side>`. `rwt_side` encodes which side of the pair
+/// is RWT: `0 = side A`, `1 = side B`. `reserve_after` is the post-compound
+/// pool reserve on the RWT side (snapshot for analytics / dashboard).
+/// See Layer 8 architecture §6.3. Body layout: 32+32+8+1+8+8 = 89 bytes.
+#[event]
+pub struct CompoundYieldExecuted {
+    pub pool: [u8; 32],
+    pub ot_mint: [u8; 32],
+    pub rwt_claimed: u64,
+    pub rwt_side: u8,
+    pub reserve_after: u64,
+    pub timestamp: i64,
+}

@@ -3,8 +3,8 @@
 //! Purpose-built AMM for trading OT and RWT tokens. All pools pair with RWT.
 //! Fee split: LP (auto-compound) + protocol (Areal) + optional OT Treasury.
 //!
-//! 14 instructions (Layer 4 StandardCurve + Layer 5 Concentrated), 5 PDA accounts, 12 events.
-//! compound_yield (Layer 8), Nexus (Layer 9) deferred.
+//! 15 instructions (Layer 4 StandardCurve + Layer 5 Concentrated + Layer 8
+//! `compound_yield`), 5 PDA accounts, 13 events. Nexus (Layer 9) deferred.
 //!
 //! Built on Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/native-dex.mdx for full specification.
@@ -44,6 +44,7 @@ use instructions::update_dex_config::UpdateDexConfig;
 use instructions::update_pool_creators::UpdatePoolCreators;
 use instructions::pause::{PausePool, UnpausePool};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
+use instructions::compound_yield::CompoundYield;
 
 declare_id!("DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL");
 
@@ -148,5 +149,17 @@ pub mod native_dex {
     /// Step 2: Proposed authority accepts. Updates both dex_config + pool_creators.
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         crate::instructions::authority_transfer::accept_handler(ctx)
+    }
+
+    /// Pool PDA claims vested RWT from a Yield Distribution distributor and
+    /// folds the received RWT into `reserve_<rwt_side>` (auto-compound for
+    /// LPs). Permissionless — any wallet can act as crank (pays ClaimStatus
+    /// rent on first claim). Layer 8 §5.3.
+    pub fn compound_yield(
+        ctx: Context<CompoundYield>,
+        cumulative_amount: u64,
+        proof: alloc::vec::Vec<[u8; 32]>,
+    ) -> Result<()> {
+        crate::instructions::compound_yield::handler(ctx, cumulative_amount, proof)
     }
 }

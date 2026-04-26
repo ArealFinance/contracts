@@ -80,4 +80,15 @@ pub enum DexError {
     ConservationViolation,
     #[msg("Pool type mismatch")]
     InvalidPoolType,
+    // ----- Layer 8 (compound_yield) -----
+    #[msg("yd_program account does not match pinned YD_PROGRAM_ID")]
+    InvalidYdProgram,
+    #[msg("pool PDA does not match expected derivation")]
+    InvalidPoolPda,
+    #[msg("target_vault does not match pool.vault_a/b on the RWT side")]
+    InvalidTargetVault,
+    #[msg("neither token_a_mint nor token_b_mint is RWT_MINT")]
+    TargetVaultNotRwt,
+    #[msg("ot_mint does not match the pool's OT side mint")]
+    InvalidOtMint,
 }

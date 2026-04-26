@@ -10,3 +10,4 @@ pub mod update_dex_config;
 pub mod update_pool_creators;
 pub mod pause;
 pub mod authority_transfer;
+pub mod compound_yield;
