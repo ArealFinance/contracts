@@ -1,6 +1,7 @@
 //! Yield Distribution — perpetual merkle-based RWT yield streams with per-claimant vesting.
 //!
-//! 10 instructions (convert_to_rwt deferred to Layer 8), 4 state accounts, 10 events.
+//! 13 instructions (Layer 8 added `convert_to_rwt` + Layer 9 placeholders),
+//! 4 state accounts, 12 events.
 //!
 //! Built on the Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/yield-distribution.mdx for the full specification.
@@ -29,6 +30,7 @@ pub mod instructions;
 use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
 use instructions::claim::Claim;
 use instructions::close_distributor::CloseDistributor;
+use instructions::convert_to_rwt::ConvertToRwt;
 use instructions::create_distributor::CreateDistributor;
 use instructions::fund_distributor::FundDistributor;
 use instructions::initialize_config::InitializeConfig;
@@ -147,5 +149,22 @@ pub mod yield_distribution {
         amount: u64,
     ) -> Result<()> {
         crate::instructions::withdraw_liquidity_holding::handler(ctx, amount)
+    }
+
+    /// Permissionless convert-and-fund: converts per-distributor accumulated
+    /// USDC revenue into RWT (DEX swap and/or RWT Engine mint, atomic) and
+    /// credits the distributor's reward vault. Layer 8 §5.1.
+    pub fn convert_to_rwt(
+        ctx: Context<ConvertToRwt>,
+        usdc_amount: u64,
+        min_rwt_out: u64,
+        swap_first: bool,
+    ) -> Result<()> {
+        crate::instructions::convert_to_rwt::handler(
+            ctx,
+            usdc_amount,
+            min_rwt_out,
+            swap_first,
+        )
     }
 }

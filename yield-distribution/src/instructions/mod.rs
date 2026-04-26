@@ -9,3 +9,4 @@ pub mod update_publish_authority;
 pub mod authority_transfer;
 pub mod initialize_liquidity_holding;
 pub mod withdraw_liquidity_holding;
+pub mod convert_to_rwt;

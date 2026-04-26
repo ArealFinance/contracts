@@ -58,4 +58,14 @@ pub enum YdError {
     LiquidityHoldingAlreadyInitialized,
     #[msg("Layer 9 Nexus authority not yet initialized — withdraw is disabled")]
     NexusNotInitialized,
+    #[msg("dex_program does not match pinned DEX_PROGRAM_ID")]
+    InvalidDexProgram,
+    #[msg("rwt_engine_program does not match pinned RWT_ENGINE_PROGRAM_ID")]
+    InvalidRwtProgram,
+    #[msg("Accumulator USDC/RWT ATA owner or mint mismatch")]
+    InvalidAccumulatorAta,
+    #[msg("rwt_acquired below caller-specified min_rwt_out")]
+    ConversionSlippage,
+    #[msg("No USDC available to convert (or zero RWT acquired)")]
+    NoUsdcToConvert,
 }
