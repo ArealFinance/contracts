@@ -181,6 +181,13 @@ pub(crate) fn swap_internal<'info>(
 
     let (amount_out, fee_lp, fee_protocol, fee_ot_treasury, net_input);
 
+    // Note (Layer 9 D28): `token_a_is_rwt_side` is no longer used by
+    // `sync_fee_lp_to_bin` — fee_lp is tracked exclusively via
+    // `cumulative_fees_per_share_<side>` and is no longer mirrored into
+    // bins or reserves. The local is preserved as `_` to keep its derivation
+    // close to where the fee side is determined for future readers.
+    let _token_a_is_rwt_side = token_a_is_rwt_side;
+
     if input_is_rwt {
         // Selling RWT: fee deducted from input BEFORE swap
         let fees = calculate_fees(amount_in, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
@@ -209,9 +216,11 @@ pub(crate) fn swap_internal<'info>(
             amount_out = walk_out;
             pool.active_bin_id = bin_array.active_bin_id;
 
-            // SECURITY: Sync unconsumed input + fee_lp into bins so sum(bins) == reserves.
+            // SECURITY: Sync unconsumed input into bins so sum(bins) == reserves.
+            // Layer 9 D28: fee_lp is NOT synced into bins — it lives in the
+            // `cumulative_fees_per_share_<side>` accumulator instead, and is
+            // explicitly excluded from reserves by the effects step below.
             concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
-            concentrated::sync_fee_lp_to_bin(bin_array, fees.fee_lp, token_a_is_rwt_side)?;
         } else {
             amount_out = constant_product_output(reserve_in, reserve_out, net_input)?;
         }
@@ -243,13 +252,13 @@ pub(crate) fn swap_internal<'info>(
             gross_out = walk_out;
             pool.active_bin_id = bin_array.active_bin_id;
 
-            // Sync unconsumed input into bins
+            // Sync unconsumed input into bins. Layer 9 D28: fee_lp stays in
+            // the RWT vault but is tracked via the per-share accumulator,
+            // not via bin liquidity (bins must mirror reserves; reserves
+            // exclude fee_lp post-D28).
             concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
 
-            // Fees calculated once, used for both bin sync and reserve update
             let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
-            // fee_lp stays in RWT vault — sync to active bin so bins match reserves
-            concentrated::sync_fee_lp_to_bin(bin_array, fees.fee_lp, token_a_is_rwt_side)?;
 
             let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
@@ -281,20 +290,31 @@ pub(crate) fn swap_internal<'info>(
     }
 
     // --- Effects: update reserves BEFORE CPIs ---
-    // LP fee auto-compounds into reserves (stays in vault on the RWT side)
+    //
+    // Layer 9 D28: LP fee no longer auto-compounds into reserves. fee_lp
+    // physically stays in the RWT vault on the fee side, but reserves are
+    // updated as if it were extracted. The off-balance amount is tracked
+    // via `cumulative_fees_per_share_<side>` (see accumulator update
+    // below), and is paid out to LPs by `claim_lp_fees` (D28).
+    //
+    // For the input-RWT branches the difference vs pre-D28 is "do not add
+    // fee_lp back into reserves". For the output-RWT branches the
+    // difference is "subtract fee_lp from reserves alongside fee_protocol
+    // and fee_ot_treasury". Either way the post-swap invariant holds:
+    // `vault_<side>_balance == reserves + cumulative_fees_owed_to_LPs`.
     if a_to_b {
         if input_is_rwt {
-            // Input side (A=RWT): user sends amount_in, but only net_input goes to reserves
-            // fee_lp stays in vault = auto-compound. fee_protocol + ot_treasury extracted.
+            // Input side (A=RWT): user sends amount_in, only net_input goes
+            // into reserves. fee_lp stays in vault but is tracked off-reserve
+            // by the accumulator. fee_protocol + ot_treasury are CPI-extracted.
             pool.reserve_a = pool.reserve_a
                 .checked_add(net_input)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
-                .checked_add(fee_lp)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
             pool.reserve_b = pool.reserve_b.checked_sub(amount_out)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
         } else {
-            // Output side (B=RWT): fee_lp stays on output side
+            // Output side (B=RWT): fee_lp now leaves reserves (off-reserve
+            // accumulator) instead of staying as auto-compound.
             pool.reserve_a = pool.reserve_a.checked_add(net_input)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
             pool.reserve_b = pool.reserve_b.checked_sub(amount_out)
@@ -302,15 +322,14 @@ pub(crate) fn swap_internal<'info>(
                 .checked_sub(fee_protocol)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_ot_treasury)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .checked_sub(fee_lp)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
-            // fee_lp stays in reserve_b (auto-compound)
         }
     } else {
         if input_is_rwt {
             pool.reserve_b = pool.reserve_b
                 .checked_add(net_input)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
-                .checked_add(fee_lp)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
             pool.reserve_a = pool.reserve_a.checked_sub(amount_out)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
@@ -322,8 +341,27 @@ pub(crate) fn swap_internal<'info>(
                 .checked_sub(fee_protocol)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_ot_treasury)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .checked_sub(fee_lp)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
         }
+    }
+
+    // Layer 9 D28 — update LP-fee per-share accumulator on the RWT side.
+    //
+    // The fee always accrues on the RWT side of the pair (token_a or token_b
+    // depending on `is_rwt_mint`). When `total_lp_shares == 0` the fee_lp
+    // funds remain in the vault unaccounted; this is only reachable before
+    // the very first `add_liquidity` (no LP yet). We document the edge but
+    // do not panic — the deposited fee_lp would be effectively "burned"
+    // toward the eventual first LP cohort because the snapshot at first
+    // add_liquidity will be 0. In practice swaps cannot succeed at all
+    // when reserves are zero, so this branch is unreachable in the
+    // standard pool path; concentrated pools allow one-sided liquidity, so
+    // the guard is required there.
+    {
+        let rwt_is_side_a = (a_to_b && input_is_rwt) || (!a_to_b && !input_is_rwt);
+        accrue_lp_fee_per_share(pool, fee_lp, rwt_is_side_a)?;
     }
 
     pool.total_fees_accumulated = pool.total_fees_accumulated
@@ -416,4 +454,103 @@ pub(crate) fn swap_internal<'info>(
     });
 
     Ok(())
+}
+
+/// Layer 9 D28 — accrue LP-side `fee_lp` into the per-share accumulator on
+/// the RWT side of the pool.
+///
+/// Q64.64 fixed-point: `delta_per_share = (fee_lp << 64) / total_lp_shares`.
+/// Returns `Ok(())` (no-op) when either `fee_lp == 0` or
+/// `total_lp_shares == 0`. The latter is only reachable before the first
+/// `add_liquidity`; concentrated pools allow swaps with one-sided liquidity
+/// before any LP exists, so the guard is required to avoid div-by-zero.
+///
+/// Extracted as `pub(crate)` so the unit tests below can drive the
+/// accumulator math against a synthetic `PoolState` without spinning up the
+/// full BPF runtime. Production callers must continue to invoke it from
+/// inside `swap_internal` after the reserve effects step (we mutate
+/// `cumulative_fees_per_share_<side>` only — reserves are owned by the
+/// caller).
+pub(crate) fn accrue_lp_fee_per_share(
+    pool: &mut PoolState,
+    fee_lp: u64,
+    rwt_is_side_a: bool,
+) -> core::result::Result<(), ProgramError> {
+    if pool.total_lp_shares == 0 || fee_lp == 0 {
+        return Ok(());
+    }
+    let delta_q64: u128 = (fee_lp as u128) << 64;
+    let delta_per_share: u128 = delta_q64 / pool.total_lp_shares;
+    if rwt_is_side_a {
+        pool.cumulative_fees_per_share_a = pool
+            .cumulative_fees_per_share_a
+            .checked_add(delta_per_share)
+            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+    } else {
+        pool.cumulative_fees_per_share_b = pool
+            .cumulative_fees_per_share_b
+            .checked_add(delta_per_share)
+            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Layer 9 D28 — spot tests for the LP-fee per-share accumulator.
+    //!
+    //! Layer 4-5 swap-math regression coverage continues to live in the
+    //! per-package test suites (`amm.rs`, `concentrated.rs`, integration
+    //! harnesses). These tests pin the new accumulator behaviour: a swap
+    //! with non-zero `fee_lp` should bump
+    //! `cumulative_fees_per_share_<side>` by `(fee_lp << 64) / total_lp_shares`
+    //! on the RWT side and leave the other side untouched, while a pool
+    //! with `total_lp_shares == 0` must not divide-by-zero.
+    use super::*;
+
+    /// Build a synthetic `PoolState` in raw bytes for accumulator math
+    /// testing. Only the fields the helper actually reads/writes are set.
+    /// SAFETY: PoolState is `#[repr(C, packed)]` via `#[account]` and
+    /// all-zero is a valid bit pattern for every field type.
+    fn make_pool(total_lp_shares: u128) -> PoolState {
+        let buf = [0u8; core::mem::size_of::<PoolState>()];
+        let mut pool: PoolState = unsafe { core::ptr::read(buf.as_ptr() as *const PoolState) };
+        pool.total_lp_shares = total_lp_shares;
+        pool
+    }
+
+    /// D28 — happy path: side-A accumulator gains `(fee_lp << 64) /
+    /// total_lp_shares`; side-B accumulator stays zero.
+    #[test]
+    fn swap_updates_cumulative_fees_per_share_a() {
+        let mut pool = make_pool(1_000);
+        accrue_lp_fee_per_share(&mut pool, 10, /* rwt_is_side_a */ true).unwrap();
+        let expected: u128 = (10u128 << 64) / 1_000u128;
+        assert_eq!({ pool.cumulative_fees_per_share_a }, expected);
+        assert_eq!({ pool.cumulative_fees_per_share_b }, 0u128);
+    }
+
+    /// D28 — symmetric coverage: when RWT is on side B, only the B-side
+    /// accumulator must move.
+    #[test]
+    fn swap_updates_cumulative_fees_per_share_b() {
+        let mut pool = make_pool(2_000);
+        accrue_lp_fee_per_share(&mut pool, 25, /* rwt_is_side_a */ false).unwrap();
+        let expected: u128 = (25u128 << 64) / 2_000u128;
+        assert_eq!({ pool.cumulative_fees_per_share_b }, expected);
+        assert_eq!({ pool.cumulative_fees_per_share_a }, 0u128);
+    }
+
+    /// D28 — guard: `total_lp_shares == 0` must short-circuit without
+    /// dividing by zero. Reachable for concentrated pools that allow a
+    /// swap before the first LP joins.
+    #[test]
+    fn swap_zero_lp_shares_does_not_panic() {
+        let mut pool = make_pool(0);
+        // Both branches must be safe.
+        accrue_lp_fee_per_share(&mut pool, 100, true).unwrap();
+        accrue_lp_fee_per_share(&mut pool, 100, false).unwrap();
+        assert_eq!({ pool.cumulative_fees_per_share_a }, 0u128);
+        assert_eq!({ pool.cumulative_fees_per_share_b }, 0u128);
+    }
 }

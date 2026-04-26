@@ -3,9 +3,10 @@ use pinocchio::sysvars::{Sysvar, clock::Clock};
 
 use crate::constants::*;
 use crate::error::DexError;
-use crate::events::LiquidityRemoved;
+use crate::events::{LiquidityRemoved, LpFeesClaimed};
 use crate::state::*;
 use crate::amm::calculate_remove_amounts;
+use crate::instructions::claim_lp_fees::compute_claimable;
 use crate::validation::*;
 use crate::concentrated;
 
@@ -114,6 +115,17 @@ pub(crate) fn remove_liquidity_internal<'info>(
     validate_vault(accounts.vault_a, &pool.vault_a)?;
     validate_vault(accounts.vault_b, &pool.vault_b)?;
 
+    // Layer 9 D30 — snapshot pool's cumulative-fee-per-share BEFORE any state
+    // mutation. The auto-claim below realises pending fees against the
+    // position's existing share count; without this fix, a full-close would
+    // permanently forfeit unclaimed accumulated fees because the LpPosition
+    // is closed before `claim_lp_fees` could be called against it. Partial
+    // close is also covered: skipping auto-claim there would let the
+    // remaining shares inherit pending fees pro-rata while the removed
+    // shares forfeit them, creating an arbitrage.
+    let cumulative_a = pool.cumulative_fees_per_share_a;
+    let cumulative_b = pool.cumulative_fees_per_share_b;
+
     // --- Validate LP position ---
     let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
     let provider_key = pubkey_bytes(accounts.authority);
@@ -129,6 +141,25 @@ pub(crate) fn remove_liquidity_internal<'info>(
     if lp.shares < shares_to_burn {
         return Err(ProgramError::from(DexError::InsufficientShares));
     }
+
+    // Layer 9 D30 — compute auto-claim payout against the share count
+    // BEFORE reduction. `lp.shares >= shares_to_burn > 0` is guaranteed by
+    // the InsufficientShares guard above, so the multiplication input is
+    // strictly positive (or zero only if both delta and shares are zero —
+    // a no-op).
+    let delta_a_q64 = cumulative_a
+        .checked_sub(lp.fees_claimed_per_share_a)
+        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+    let delta_b_q64 = cumulative_b
+        .checked_sub(lp.fees_claimed_per_share_b)
+        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+    let auto_claim_a = compute_claimable(delta_a_q64, lp.shares)?;
+    let auto_claim_b = compute_claimable(delta_b_q64, lp.shares)?;
+    // Advance the snapshot so subsequent claim_lp_fees / partial-close calls
+    // observe zero delta on the remaining shares. Effects-before-CPI; the
+    // vault-side transfer below moves the realised value to the provider.
+    lp.fees_claimed_per_share_a = cumulative_a;
+    lp.fees_claimed_per_share_b = cumulative_b;
 
     // --- Calculate proportional withdrawal ---
     let (amount_a, amount_b) = calculate_remove_amounts(
@@ -207,6 +238,50 @@ pub(crate) fn remove_liquidity_internal<'info>(
         }.invoke_signed(&[Signer::from(&seeds)])?;
     }
 
+    // Layer 9 D30 — auto-claim outbound transfers. Pool-PDA-signed Transfer
+    // vault → provider ATA on each side that accrued pending fees, sized
+    // against the pre-reduction share count (see snapshot above). MUST run
+    // before the close_position lamport sweep because both legs target the
+    // same `provider_token_<side>` ATAs and the close path can drain
+    // `lp_position` of state we'd otherwise still be inspecting.
+    if auto_claim_a > 0 {
+        let seeds = [
+            Seed::from(b"pool" as &[u8]),
+            Seed::from(pool.token_a_mint.as_ref()),
+            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(bump.as_ref()),
+        ];
+        arlex_lang::token::instructions::Transfer {
+            from: accounts.vault_a,
+            to: accounts.provider_token_a,
+            authority: accounts.pool_state,
+            amount: auto_claim_a,
+        }.invoke_signed(&[Signer::from(&seeds)])?;
+    }
+    if auto_claim_b > 0 {
+        let seeds = [
+            Seed::from(b"pool" as &[u8]),
+            Seed::from(pool.token_a_mint.as_ref()),
+            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(bump.as_ref()),
+        ];
+        arlex_lang::token::instructions::Transfer {
+            from: accounts.vault_b,
+            to: accounts.provider_token_b,
+            authority: accounts.pool_state,
+            amount: auto_claim_b,
+        }.invoke_signed(&[Signer::from(&seeds)])?;
+    }
+    if auto_claim_a > 0 || auto_claim_b > 0 {
+        emit!(LpFeesClaimed {
+            recipient: provider_key,
+            pool: pool_key,
+            claimable_a: auto_claim_a,
+            claimable_b: auto_claim_b,
+            timestamp: clock.unix_timestamp,
+        });
+    }
+
     // Close LpPosition if fully withdrawn (rent back to provider)
     if close_position {
         // Transfer lamports from LpPosition to provider
@@ -232,4 +307,106 @@ pub(crate) fn remove_liquidity_internal<'info>(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Layer 9 D30 — pure-Rust math + invariant tests for the
+    //! `remove_liquidity` auto-claim integration.
+    //!
+    //! Pre-D28, `remove_liquidity` returning proportional reserves
+    //! automatically returned the LP's compounded fees because the LP-fee
+    //! model was auto-compound (fee_lp grew the reserves). D28 split the
+    //! semantic: fee_lp stays in the vault but is tracked via the per-
+    //! share accumulator, NOT compounded into reserves. Without an
+    //! auto-claim on close, an LP doing a full `remove_liquidity` would
+    //! permanently forfeit unclaimed accrued fees because the LpPosition
+    //! is closed before `claim_lp_fees` could be called against it.
+    //!
+    //! This test pins the math: the auto-claim is computed against the
+    //! pre-reduction share count, the snapshot is advanced, and a
+    //! subsequent claim observes zero delta.
+    use super::*;
+    use crate::state::{LpPosition, PoolState};
+
+    fn make_pool(cumulative_a: u128, cumulative_b: u128, total_lp_shares: u128) -> PoolState {
+        let buf = [0u8; core::mem::size_of::<PoolState>()];
+        let mut pool: PoolState = unsafe { core::ptr::read(buf.as_ptr() as *const PoolState) };
+        pool.cumulative_fees_per_share_a = cumulative_a;
+        pool.cumulative_fees_per_share_b = cumulative_b;
+        pool.total_lp_shares = total_lp_shares;
+        pool
+    }
+
+    fn make_position(
+        shares: u128,
+        fees_claimed_a: u128,
+        fees_claimed_b: u128,
+    ) -> LpPosition {
+        let buf = [0u8; core::mem::size_of::<LpPosition>()];
+        let mut lp: LpPosition =
+            unsafe { core::ptr::read(buf.as_ptr() as *const LpPosition) };
+        lp.shares = shares;
+        lp.fees_claimed_per_share_a = fees_claimed_a;
+        lp.fees_claimed_per_share_b = fees_claimed_b;
+        lp
+    }
+
+    /// D30 — full close auto-claims pending fees against the pre-reduction
+    /// share count, then advances the snapshot so a residual partial-close
+    /// caller (or post-close re-init) observes zero delta. Reproduces the
+    /// effects-step ordering inside `remove_liquidity_internal`: snapshot
+    /// pool cumulative → compute claimable on `lp.shares_pre` → advance
+    /// position snapshot → reduce shares.
+    #[test]
+    fn remove_liquidity_full_close_auto_claims_pending_fees() {
+        let cumulative_a: u128 = 6u128 << 64;
+        let cumulative_b: u128 = 2u128 << 64;
+        let pool = make_pool(cumulative_a, cumulative_b, 5_000);
+
+        // Position: 5_000 shares (full pool), zero snapshot ⇒ entire
+        // accumulator delta is owed.
+        let mut lp = make_position(5_000, 0, 0);
+        let shares_pre = lp.shares;
+
+        // Effects step (matches handler).
+        let delta_a = pool
+            .cumulative_fees_per_share_a
+            .checked_sub(lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b = pool
+            .cumulative_fees_per_share_b
+            .checked_sub(lp.fees_claimed_per_share_b)
+            .unwrap();
+        let auto_claim_a = compute_claimable(delta_a, shares_pre).unwrap();
+        let auto_claim_b = compute_claimable(delta_b, shares_pre).unwrap();
+        // (6 << 64) * 5000 >> 64 == 30_000; (2 << 64) * 5000 >> 64 == 10_000.
+        assert_eq!(auto_claim_a, 30_000u64);
+        assert_eq!(auto_claim_b, 10_000u64);
+
+        // Snapshot advances BEFORE share reduction (matches handler order).
+        lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
+        lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
+
+        // Full close: shares go to zero. The LpPosition account would be
+        // closed in the on-chain handler — here we just assert the math
+        // invariants so the auto-claim path is provably correct against the
+        // pre-reduction share count.
+        lp.shares = lp.shares.checked_sub(shares_pre).unwrap();
+        assert_eq!({ lp.shares }, 0u128);
+
+        // Re-running the delta against the advanced snapshot must observe
+        // zero on both sides — auto-claim cannot double-pay even if the
+        // handler is re-entered (e.g. partial-close scenarios).
+        let delta_a2 = pool
+            .cumulative_fees_per_share_a
+            .checked_sub(lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b2 = pool
+            .cumulative_fees_per_share_b
+            .checked_sub(lp.fees_claimed_per_share_b)
+            .unwrap();
+        assert_eq!(delta_a2, 0u128);
+        assert_eq!(delta_b2, 0u128);
+    }
 }

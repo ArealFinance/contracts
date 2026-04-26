@@ -110,4 +110,7 @@ pub enum DexError {
     NexusRecordDepositOnlyFromYd,
     #[msg("LiquidityHolding PDA derivation does not match passed account")]
     InvalidLiquidityHoldingPda,
+    // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
+    #[msg("LpPosition.pool does not match the supplied pool_state")]
+    InvalidLpPosition,
 }

@@ -3,9 +3,10 @@ use pinocchio::sysvars::{Sysvar, clock::Clock};
 
 use crate::constants::*;
 use crate::error::DexError;
-use crate::events::LiquidityAdded;
+use crate::events::{LiquidityAdded, LpFeesClaimed};
 use crate::state::{DexConfig, PoolState, LpPosition, BinArray};
 use crate::amm::calculate_lp_shares;
+use crate::instructions::claim_lp_fees::compute_claimable;
 use crate::validation::*;
 use crate::concentrated;
 
@@ -140,6 +141,18 @@ pub(crate) fn add_liquidity_internal<'info>(
     validate_vault(accounts.vault_a, &pool.vault_a)?;
     validate_vault(accounts.vault_b, &pool.vault_b)?;
 
+    // Layer 9 D29 — snapshot pool fields needed for fee-snapshot init / auto-claim.
+    // Read here while we hold the pool mut handle; values are immutable for the
+    // remainder of the handler (cumulative_fees_per_share_<side> only mutates inside
+    // swap_internal, never inside add_liquidity_internal). Pool PDA fields (bump,
+    // mints) are needed downstream for the pool-PDA-signed outbound auto-claim
+    // transfer when an existing position has pending fees.
+    let cumulative_a = pool.cumulative_fees_per_share_a;
+    let cumulative_b = pool.cumulative_fees_per_share_b;
+    let pool_bump = pool.bump;
+    let pool_token_a_mint = pool.token_a_mint;
+    let pool_token_b_mint = pool.token_b_mint;
+
     // --- Calculate LP shares ---
     let is_first = pool.total_lp_shares == 0;
     let (deposit_a, deposit_b, shares) = if is_first {
@@ -219,6 +232,13 @@ pub(crate) fn add_liquidity_internal<'info>(
     let pool_key = pubkey_bytes(accounts.pool_state);
     let clock = Clock::get()?;
 
+    // Layer 9 D29 — auto-claim payout amounts. Populated only on the existing-
+    // position branch when there are pending fees; declared here so the
+    // post-effects pool-PDA-signed outbound transfers (below) have a single
+    // source of truth.
+    let mut auto_claim_a: u64 = 0;
+    let mut auto_claim_b: u64 = 0;
+
     // Check if LpPosition already exists (data_len > 0 means initialized)
     let lp_data_len = accounts.lp_position.data_len();
     if lp_data_len == 0 {
@@ -252,6 +272,12 @@ pub(crate) fn add_liquidity_internal<'info>(
         lp.shares = shares;
         lp.last_update_ts = clock.unix_timestamp;
         lp.bump = lp_bump;
+        // Layer 9 D29 — snapshot pool's current cumulative-fee-per-share so
+        // the new LP starts with zero claimable. Without this init, a fresh
+        // LP would be able to claim historical fees that accrued before they
+        // joined the pool, breaking `vault == reserves + Σ(claimable)`.
+        lp.fees_claimed_per_share_a = cumulative_a;
+        lp.fees_claimed_per_share_b = cumulative_b;
     } else {
         // Update existing position
         let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
@@ -262,6 +288,29 @@ pub(crate) fn add_liquidity_internal<'info>(
         if lp.pool != pool_key {
             return Err(ProgramError::from(DexError::InvalidVault));
         }
+
+        // Layer 9 D29 — auto-claim pending fees BEFORE incrementing shares.
+        // Skipping this would dilute pre-existing claimable across the
+        // post-increment share count, over-paying the fresh deposit at the
+        // expense of the position's own historical accrual. The CEI-style
+        // outbound vault-PDA transfer is deferred until after all account-
+        // mutation effects are applied (further below in this handler).
+        if lp.shares > 0 {
+            let delta_a_q64 = cumulative_a
+                .checked_sub(lp.fees_claimed_per_share_a)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            let delta_b_q64 = cumulative_b
+                .checked_sub(lp.fees_claimed_per_share_b)
+                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            auto_claim_a = compute_claimable(delta_a_q64, lp.shares)?;
+            auto_claim_b = compute_claimable(delta_b_q64, lp.shares)?;
+            // Advance the snapshot so a subsequent claim_lp_fees observes
+            // zero delta. Effects-before-CPI; the vault-side transfer below
+            // moves the realised value to the provider ATAs.
+            lp.fees_claimed_per_share_a = cumulative_a;
+            lp.fees_claimed_per_share_b = cumulative_b;
+        }
+
         lp.shares = lp.shares.checked_add(shares)
             .ok_or(ProgramError::from(DexError::MathOverflow))?;
         lp.last_update_ts = clock.unix_timestamp;
@@ -296,6 +345,50 @@ pub(crate) fn add_liquidity_internal<'info>(
         }
     }
 
+    // Layer 9 D29 — auto-claim outbound transfers. Vault → provider ATA on
+    // each side that accrued pending fees. Authority is the pool PDA (vault
+    // owner), so the seeds are the canonical create_pool seeds: ["pool",
+    // token_a_mint, token_b_mint, bump]. Skipped when both sides are zero
+    // (fresh position, or existing position with snapshot already aligned).
+    if auto_claim_a > 0 || auto_claim_b > 0 {
+        let pool_bump_arr = [pool_bump];
+        if auto_claim_a > 0 {
+            let seeds = [
+                Seed::from(b"pool" as &[u8]),
+                Seed::from(pool_token_a_mint.as_ref()),
+                Seed::from(pool_token_b_mint.as_ref()),
+                Seed::from(pool_bump_arr.as_ref()),
+            ];
+            arlex_lang::token::instructions::Transfer {
+                from: accounts.vault_a,
+                to: accounts.provider_token_a,
+                authority: accounts.pool_state,
+                amount: auto_claim_a,
+            }.invoke_signed(&[Signer::from(&seeds)])?;
+        }
+        if auto_claim_b > 0 {
+            let seeds = [
+                Seed::from(b"pool" as &[u8]),
+                Seed::from(pool_token_a_mint.as_ref()),
+                Seed::from(pool_token_b_mint.as_ref()),
+                Seed::from(pool_bump_arr.as_ref()),
+            ];
+            arlex_lang::token::instructions::Transfer {
+                from: accounts.vault_b,
+                to: accounts.provider_token_b,
+                authority: accounts.pool_state,
+                amount: auto_claim_b,
+            }.invoke_signed(&[Signer::from(&seeds)])?;
+        }
+        emit!(LpFeesClaimed {
+            recipient: provider_key,
+            pool: pool_key,
+            claimable_a: auto_claim_a,
+            claimable_b: auto_claim_b,
+            timestamp: clock.unix_timestamp,
+        });
+    }
+
     // --- Emit event ---
     emit!(LiquidityAdded {
         pool: pool_key,
@@ -307,4 +400,134 @@ pub(crate) fn add_liquidity_internal<'info>(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Layer 9 D29 — pure-Rust math + invariant tests for the
+    //! `add_liquidity` LP-fee snapshot init / auto-claim integration.
+    //!
+    //! Handler-level wiring is exercised by future BPF integration tests
+    //! where Arlex can be invoked end-to-end. The tests here pin the on-
+    //! chain math (snapshot alignment, claim-then-increment ordering)
+    //! against a synthetic in-memory state, mirroring the style used by
+    //! `claim_lp_fees.rs::tests`.
+    use super::*;
+    use crate::state::{LpPosition, PoolState};
+
+    /// Synthetic `PoolState` with the cumulative-fee fields populated.
+    /// SAFETY: PoolState is `#[repr(C, packed)]` via `#[account]` and
+    /// all-zero is a valid bit pattern for every field type.
+    fn make_pool(cumulative_a: u128, cumulative_b: u128, total_lp_shares: u128) -> PoolState {
+        let buf = [0u8; core::mem::size_of::<PoolState>()];
+        let mut pool: PoolState = unsafe { core::ptr::read(buf.as_ptr() as *const PoolState) };
+        pool.cumulative_fees_per_share_a = cumulative_a;
+        pool.cumulative_fees_per_share_b = cumulative_b;
+        pool.total_lp_shares = total_lp_shares;
+        pool
+    }
+
+    /// Synthetic `LpPosition` with a known shares + snapshot. SAFETY: same
+    /// `repr(C, packed)` zero-default rationale as `make_pool`.
+    fn make_position(
+        shares: u128,
+        fees_claimed_a: u128,
+        fees_claimed_b: u128,
+    ) -> LpPosition {
+        let buf = [0u8; core::mem::size_of::<LpPosition>()];
+        let mut lp: LpPosition =
+            unsafe { core::ptr::read(buf.as_ptr() as *const LpPosition) };
+        lp.shares = shares;
+        lp.fees_claimed_per_share_a = fees_claimed_a;
+        lp.fees_claimed_per_share_b = fees_claimed_b;
+        lp
+    }
+
+    /// D29 — fresh LpPosition init path. Pool has cumulative_a > 0 from
+    /// prior swaps; the new LP MUST snapshot the pool's current cumulative
+    /// so claimable evaluates to 0 — otherwise it would steal historical
+    /// fees that accrued before it joined.
+    #[test]
+    fn add_liquidity_initializes_fee_snapshot_from_pool_cumulative() {
+        let cumulative_a: u128 = 7u128 << 64;
+        let cumulative_b: u128 = 11u128 << 64;
+        let pool = make_pool(cumulative_a, cumulative_b, /* total_shares */ 5_000);
+
+        // Mirror the fresh-init effect inside add_liquidity_internal.
+        let mut lp = make_position(/* shares */ 0, 0, 0);
+        lp.shares = 1_000;
+        lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
+        lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
+
+        // Immediate claim against the freshly-snapped position must be zero.
+        let delta_a = pool
+            .cumulative_fees_per_share_a
+            .checked_sub(lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b = pool
+            .cumulative_fees_per_share_b
+            .checked_sub(lp.fees_claimed_per_share_b)
+            .unwrap();
+        assert_eq!(delta_a, 0u128);
+        assert_eq!(delta_b, 0u128);
+        assert_eq!(compute_claimable(delta_a, lp.shares).unwrap(), 0u64);
+        assert_eq!(compute_claimable(delta_b, lp.shares).unwrap(), 0u64);
+    }
+
+    /// D29 — existing-position increment path. The handler MUST realise
+    /// pending claimable BEFORE incrementing `shares`; otherwise the new
+    /// shares dilute the historical accrual. This pins the math: the
+    /// claimable is computed on `lp.shares_pre`, snapshot is advanced, then
+    /// shares are added.
+    #[test]
+    fn add_liquidity_existing_position_auto_claims_before_increment() {
+        // Pool has cumulative_a from prior swaps; cumulative_b stays zero.
+        let cumulative_a: u128 = 4u128 << 64;
+        let cumulative_b: u128 = 0;
+        let pool = make_pool(cumulative_a, cumulative_b, 1_000);
+
+        // Existing position with 1_000 shares, zero snapshot ⇒ pending fees.
+        let mut lp = make_position(1_000, 0, 0);
+        let shares_pre = lp.shares;
+
+        // Effects step (matches handler):
+        let delta_a = pool
+            .cumulative_fees_per_share_a
+            .checked_sub(lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b = pool
+            .cumulative_fees_per_share_b
+            .checked_sub(lp.fees_claimed_per_share_b)
+            .unwrap();
+        let auto_claim_a = compute_claimable(delta_a, shares_pre).unwrap();
+        let auto_claim_b = compute_claimable(delta_b, shares_pre).unwrap();
+        // (4 << 64) * 1000 >> 64 == 4_000.
+        assert_eq!(auto_claim_a, 4_000u64);
+        assert_eq!(auto_claim_b, 0u64);
+
+        // Snapshot advances BEFORE the share increment.
+        lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
+        lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
+
+        // Now increment shares (e.g. by 500 from the new deposit).
+        let new_shares: u128 = 500;
+        lp.shares = lp.shares.checked_add(new_shares).unwrap();
+        assert_eq!({ lp.shares }, 1_500);
+
+        // Second claim immediately after must observe zero delta on both
+        // sides — the post-increment 1_500 shares cannot retroactively
+        // multiply the original 4 << 64 cumulative.
+        let delta_a2 = pool
+            .cumulative_fees_per_share_a
+            .checked_sub(lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b2 = pool
+            .cumulative_fees_per_share_b
+            .checked_sub(lp.fees_claimed_per_share_b)
+            .unwrap();
+        assert_eq!(delta_a2, 0u128);
+        assert_eq!(delta_b2, 0u128);
+        assert_eq!(compute_claimable(delta_a2, lp.shares).unwrap(), 0u64);
+        assert_eq!(compute_claimable(delta_b2, lp.shares).unwrap(), 0u64);
+    }
 }

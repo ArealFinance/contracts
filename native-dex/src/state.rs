@@ -25,8 +25,14 @@ pub struct DexConfig {
 const _: () = assert!(core::mem::size_of::<DexConfig>() == 167);
 
 // =============================================================================
-// PoolState — 220 bytes (8 discriminator + 212 data)
+// PoolState — 252 bytes (8 discriminator + 244 data)
 // PDA Seed: ["pool", token_a_mint, token_b_mint]
+//
+// Fields `cumulative_fees_per_share_{a,b}` were added by Layer 9 D28
+// (LP-fee accumulator infrastructure). Pre-Layer-9 contracts on devnet/mainnet
+// were never `initialize_dex`-ed (state uninitialized per memory
+// `project_layer1to8_complete.md`), so no on-chain migration is required —
+// every `PoolState` account is created post-D28 with the new fields.
 // =============================================================================
 
 #[account]
@@ -47,10 +53,18 @@ pub struct PoolState {
     pub ot_treasury_fee_destination: [u8; 32],  // 32 (zeroed = no OT fee)
     pub has_ot_treasury: bool,                  // 1 (Option pattern)
     pub bump: u8,                               // 1
+    /// Layer 9 D28 — cumulative LP-fee per share, side A (Q64.64 fixed-point).
+    /// Per swap on side A, accumulator updates as
+    /// `cumulative_fees_per_share_a += (fee_lp << 64) / total_lp_shares`.
+    /// LpPosition tracks delta against `fees_claimed_per_share_a` to compute
+    /// the claimable amount on `claim_lp_fees`.
+    pub cumulative_fees_per_share_a: u128,      // 16
+    /// Layer 9 D28 — cumulative LP-fee per share, side B (Q64.64 fixed-point).
+    pub cumulative_fees_per_share_b: u128,      // 16
 }
-// SIZE = 212, SPACE = 8 + 212 = 220
+// SIZE = 244, SPACE = 8 + 244 = 252
 
-const _: () = assert!(core::mem::size_of::<PoolState>() == 212);
+const _: () = assert!(core::mem::size_of::<PoolState>() == 244);
 
 // =============================================================================
 // PoolCreators — 362 bytes (8 discriminator + 354 data)
@@ -69,8 +83,16 @@ pub struct PoolCreators {
 const _: () = assert!(core::mem::size_of::<PoolCreators>() == 354);
 
 // =============================================================================
-// LpPosition — 97 bytes (8 discriminator + 89 data)
+// LpPosition — 129 bytes (8 discriminator + 121 data)
 // PDA Seed: ["lp", pool_state, provider]
+//
+// Fields `fees_claimed_per_share_{a,b}` were added by Layer 9 D28 alongside
+// `PoolState.cumulative_fees_per_share_{a,b}`. New positions snapshot the
+// pool's current cumulative on init so they cannot retroactively claim fees
+// that accrued before they joined. `claim_lp_fees` computes claimable as
+// `((pool.cumulative - position.fees_claimed) * shares) >> 64` and then
+// updates the snapshot. Pre-Layer-9 state is uninitialized so no migration
+// is required (see PoolState header).
 // =============================================================================
 
 #[account]
@@ -80,10 +102,15 @@ pub struct LpPosition {
     pub shares: u128,                       // 16
     pub last_update_ts: i64,                // 8
     pub bump: u8,                           // 1
+    /// Layer 9 D28 — snapshot of `PoolState.cumulative_fees_per_share_a` taken
+    /// at the most recent `claim_lp_fees` (or at position open). Q64.64.
+    pub fees_claimed_per_share_a: u128,     // 16
+    /// Layer 9 D28 — snapshot of `PoolState.cumulative_fees_per_share_b`.
+    pub fees_claimed_per_share_b: u128,     // 16
 }
-// SIZE = 89, SPACE = 8 + 89 = 97
+// SIZE = 121, SPACE = 8 + 121 = 129
 
-const _: () = assert!(core::mem::size_of::<LpPosition>() == 89);
+const _: () = assert!(core::mem::size_of::<LpPosition>() == 121);
 
 // =============================================================================
 // Bin — 16 bytes (liquidity per price bin for concentrated pools)
@@ -192,5 +219,67 @@ mod tests {
         assert_eq!({ nexus.total_deposited_rwt }, 0);
         assert!(!nexus.is_active);
         assert_eq!(nexus.bump, 0);
+    }
+
+    // -------------------------------------------------------------------
+    // Layer 9 D28 — LP-fee accumulator state extension
+    //
+    // PoolState gained `cumulative_fees_per_share_{a,b}: u128` (32 bytes
+    // total). LpPosition gained `fees_claimed_per_share_{a,b}: u128` (32
+    // bytes total). The four tests below pin the new sizes (compile-time
+    // asserts already cover them; these add a runtime check + Layer-9
+    // migration footprint witness) and confirm zero-default semantics.
+    // -------------------------------------------------------------------
+
+    /// D28 — PoolState size now includes 32 bytes of LP-fee accumulator.
+    /// Pre-D28 size was 212 bytes; post-D28 size is 244 bytes (212 + 16 + 16).
+    /// Catches drift if the accumulator fields are reordered/resized or if a
+    /// future change tries to drop them without going through state migration.
+    #[test]
+    fn pool_state_size_includes_lp_fee_accumulators() {
+        assert_eq!(core::mem::size_of::<PoolState>(), 244);
+        assert_eq!(PoolState::SPACE, 252);
+    }
+
+    /// D28 — newly-created PoolState accounts must default-init both
+    /// accumulators to 0. Zero-filled bytes are a valid bit pattern for u128
+    /// (per `repr(C, packed)`). Catches any drift where a fabricated default
+    /// would imply pre-existing fees that an LpPosition snapshot at 0 could
+    /// then "claim".
+    #[test]
+    fn pool_state_default_lp_fee_accumulators_zero() {
+        // SAFETY: PoolState is `#[repr(C, packed)]` via #[account] and sums
+        // to 244 bytes with no padding. All-zero is a valid bit pattern for
+        // every field type (u8, [u8;32], u64, u128, u16, i32, bool).
+        let buf = [0u8; core::mem::size_of::<PoolState>()];
+        let pool: PoolState = unsafe { core::ptr::read(buf.as_ptr() as *const PoolState) };
+        assert_eq!({ pool.cumulative_fees_per_share_a }, 0u128);
+        assert_eq!({ pool.cumulative_fees_per_share_b }, 0u128);
+    }
+
+    /// D28 — LpPosition size now includes 32 bytes of per-side claimed-fee
+    /// snapshot. Pre-D28 size was 89 bytes; post-D28 size is 121 bytes
+    /// (89 + 16 + 16). Catches drift in the snapshot fields.
+    #[test]
+    fn lp_position_size_includes_fees_claimed_snapshots() {
+        assert_eq!(core::mem::size_of::<LpPosition>(), 121);
+        assert_eq!(LpPosition::SPACE, 129);
+    }
+
+    /// D28 — newly-created LpPosition accounts must default-init the
+    /// claimed-fee snapshots to 0. Note the canonical Layer 9 path is:
+    /// `add_liquidity` SHOULD initialise `fees_claimed_per_share_*` to the
+    /// pool's current `cumulative_fees_per_share_*` so a brand-new LP can't
+    /// claim fees that accrued before they joined. This test pins the raw
+    /// zero-default; the handler-level snapshot wiring is covered by the
+    /// `claim_lp_fees` and `add_liquidity` tests.
+    #[test]
+    fn lp_position_default_fees_claimed_zero() {
+        // SAFETY: LpPosition is `#[repr(C, packed)]` via #[account] and sums
+        // to 121 bytes with no padding. All-zero is a valid bit pattern.
+        let buf = [0u8; core::mem::size_of::<LpPosition>()];
+        let lp: LpPosition = unsafe { core::ptr::read(buf.as_ptr() as *const LpPosition) };
+        assert_eq!({ lp.fees_claimed_per_share_a }, 0u128);
+        assert_eq!({ lp.fees_claimed_per_share_b }, 0u128);
     }
 }

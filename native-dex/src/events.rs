@@ -209,3 +209,19 @@ pub struct NexusManagerUpdated {
     pub new_manager: [u8; 32],
     pub timestamp: i64,
 }
+
+// ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
+
+/// Emitted by `claim_lp_fees` when an LP realises accumulator-tracked
+/// fees on either side of the pair. `claimable_a` / `claimable_b` are
+/// post-truncation u64s (Q64.64 → integer via `>> 64`). Both may be
+/// non-zero when the position has accrued fees on both sides since the
+/// last claim. Body layout: 32 + 32 + 8 + 8 + 8 = 88 bytes.
+#[event]
+pub struct LpFeesClaimed {
+    pub recipient: [u8; 32],
+    pub pool: [u8; 32],
+    pub claimable_a: u64,
+    pub claimable_b: u64,
+    pub timestamp: i64,
+}

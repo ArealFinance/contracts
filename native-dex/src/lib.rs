@@ -48,6 +48,8 @@ use instructions::compound_yield::CompoundYield;
 // Layer 9 (Liquidity Nexus)
 use instructions::initialize_nexus::InitializeNexus;
 use instructions::update_nexus_manager::UpdateNexusManager;
+// Layer 9 D28 (LP-fee accumulator + claim_lp_fees)
+use instructions::claim_lp_fees::ClaimLpFees;
 
 declare_id!("DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL");
 
@@ -187,5 +189,17 @@ pub mod native_dex {
         new_manager: [u8; 32],
     ) -> Result<()> {
         crate::instructions::update_nexus_manager::handler(ctx, new_manager)
+    }
+
+    // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
+
+    /// Realise accumulator-tracked LP fees on both sides of a pool for the
+    /// signer's `LpPosition`. Permissionless — any LP can claim their own
+    /// position. PDA-signed Transfers from the pool vaults to the
+    /// recipient's ATAs are skipped per side when the side's claimable is
+    /// zero. Layer 9 D28 — companion ix to the swap-time
+    /// `cumulative_fees_per_share_<side>` accumulator update.
+    pub fn claim_lp_fees(ctx: Context<ClaimLpFees>) -> Result<()> {
+        crate::instructions::claim_lp_fees::handler(ctx)
     }
 }
