@@ -73,3 +73,31 @@ pub struct VaultSwapExecuted {
     pub amount_out: u64,
     pub timestamp: i64,
 }
+
+// ----- Layer 8 (claim_yield) -----
+
+/// Emitted by `claim_yield` after a successful YD claim + 70/15/15 split.
+/// Layer 8 architecture §6.2. Total body: 32 + 32 + 8*7 = 120 bytes.
+#[event]
+pub struct YieldDistributed {
+    pub vault: [u8; 32],                 // RwtVault PDA (singleton)
+    pub ot_mint: [u8; 32],               // OT mint of source distributor
+    pub total_yield: u64,                // claimed RWT total
+    pub book_value_share: u64,           // 70% — stays in vault claim ATA (NAV backing)
+    pub liquidity_share: u64,            // 15% — transferred to liquidity_dest
+    pub protocol_revenue_share: u64,     // 15% — transferred to protocol_revenue_dest
+    pub nav_before: u64,
+    pub nav_after: u64,
+    pub timestamp: i64,
+}
+
+/// Emitted by `claim_yield` after the liquidity_share transfer to the
+/// `LiquidityHolding` PDA RWT ATA (per D11.1, singleton). Layer 8
+/// architecture §6.5 (D13). Total body: 32 + 32 + 8 + 8 = 80 bytes.
+#[event]
+pub struct LiquidityHoldingFunded {
+    pub liquidity_holding: [u8; 32],     // == dist_config.liquidity_destination
+    pub ot_mint: [u8; 32],               // OT context (source distributor)
+    pub amount: u64,                     // liquidity_share transferred
+    pub timestamp: i64,
+}

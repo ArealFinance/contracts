@@ -4,8 +4,8 @@
 //! of OT positions. Users deposit USDC to mint RWT at the current NAV price.
 //! A manager actively trades OT positions to grow the portfolio.
 //!
-//! 11 instructions (Layer 3 + Layer 6), 2 PDA accounts, 9 events.
-//! claim_yield (Layer 8) deferred.
+//! 12 instructions (Layer 3 + Layer 6 + Layer 8), 2 PDA accounts, 11 events.
+//! Layer 8: `claim_yield` (RwtVault claims YD yield, 70/15/15 split).
 //!
 //! Built on Arlex framework (Pinocchio). Classic SPL Token only.
 //! See docs/contracts/rwt-engine.mdx for full specification.
@@ -39,6 +39,7 @@ use instructions::update_distribution_config::UpdateDistributionConfig;
 use instructions::pause::{PauseMint, UnpauseMint};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 use instructions::vault_swap::VaultSwap;
+use instructions::claim_yield::ClaimYield;
 
 declare_id!("RWT9hgbjHQDj98xP7FYsT5QYp5X32XyK6QfMRmFtARL");
 
@@ -134,5 +135,16 @@ pub mod rwt_engine {
         a_to_b: bool,
     ) -> Result<()> {
         crate::instructions::vault_swap::handler(ctx, amount_in, min_amount_out, a_to_b)
+    }
+
+    /// Layer 8 §5.2 — RwtVault PDA claims vested RWT from a YD distributor
+    /// and splits the received amount 70/15/15 (book/liquidity/protocol).
+    /// Permissionless: anyone (typically the yield-claim crank) may call this.
+    pub fn claim_yield(
+        ctx: Context<ClaimYield>,
+        cumulative_amount: u64,
+        proof: alloc::vec::Vec<[u8; 32]>,
+    ) -> Result<()> {
+        crate::instructions::claim_yield::handler(ctx, cumulative_amount, proof)
     }
 }

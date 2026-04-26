@@ -60,3 +60,22 @@ pub const YD_PROGRAM_ID: [u8; 32] = [
 /// `yield_distribution::claim`
 /// sha256("global:claim")[..8]
 pub const DISC_YD_CLAIM: [u8; 8] = [0x3e, 0xc6, 0xd6, 0xc1, 0xd5, 0x9f, 0x6c, 0xd2];
+
+// ----- Layer 8 token-mint pins -----
+//
+// RWT_MINT (vanity) — pinned for `claim_yield` ATA validation. Layer 8 §5.2.3
+// requires that the vault's RWT claim ATA has `mint == RWT_MINT` (refuses to
+// route claimed RWT through a foreign mint).
+// Source of truth: contracts/native-dex/src/constants.rs (RWT_MINT).
+// Devnet: FUQX2AepBoun3hFQjoXcfbX5aGRLxfACx1sAqCC63i5
+//
+// MAINNET-REPLACE: this is a devnet vanity address. For mainnet release,
+// replace bytes here AND in contracts/native-dex/src/constants.rs and
+// contracts/ownership-token/src/constants.rs (RWT_MINT) with the production
+// RWT mint. Mismatch causes silent DoS on all RWT yield claims.
+pub const RWT_MINT: [u8; 32] = [
+    0x03, 0xb5, 0x1e, 0x69, 0x7d, 0xb5, 0xc8, 0x64,
+    0x82, 0x85, 0xb3, 0xfd, 0xbc, 0xd0, 0x43, 0xf8,
+    0x02, 0xdc, 0x6a, 0x7e, 0x21, 0x21, 0x90, 0x53,
+    0x47, 0x3e, 0xae, 0xae, 0xaf, 0xef, 0xe4, 0x6e,
+];

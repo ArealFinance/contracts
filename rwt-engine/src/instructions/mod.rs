@@ -7,3 +7,4 @@ pub mod update_distribution_config;
 pub mod pause;
 pub mod authority_transfer;
 pub mod vault_swap;
+pub mod claim_yield;

@@ -50,4 +50,13 @@ pub enum RwtError {
     ManagerDisabled,
     #[msg("Input and output token accounts must be different")]
     SameTokenAccount,
+    // ----- Layer 8 (claim_yield) -----
+    #[msg("yd_program account does not match pinned YD_PROGRAM_ID")]
+    InvalidYdProgram,
+    #[msg("rwt_claim_ata owner is not the RwtVault PDA, or mint is not RWT_MINT")]
+    InvalidRwtClaimAta,
+    #[msg("liquidity_dest does not match dist_config.liquidity_destination")]
+    InvalidLiquidityDest,
+    #[msg("protocol_revenue_dest does not match dist_config.protocol_revenue_destination")]
+    InvalidProtocolRevenueDest,
 }
