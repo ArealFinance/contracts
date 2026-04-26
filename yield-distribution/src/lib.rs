@@ -32,9 +32,11 @@ use instructions::close_distributor::CloseDistributor;
 use instructions::create_distributor::CreateDistributor;
 use instructions::fund_distributor::FundDistributor;
 use instructions::initialize_config::InitializeConfig;
+use instructions::initialize_liquidity_holding::InitializeLiquidityHolding;
 use instructions::publish_root::PublishRoot;
 use instructions::update_config::UpdateConfig;
 use instructions::update_publish_authority::UpdatePublishAuthority;
+use instructions::withdraw_liquidity_holding::WithdrawLiquidityHolding;
 
 declare_id!("YLD9EBikcTmVCnVzdx6vuNajrDkp8tyCAgZrqTwmMXF");
 
@@ -128,5 +130,22 @@ pub mod yield_distribution {
     /// Step 2: proposed authority accepts the transfer.
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         crate::instructions::authority_transfer::accept_handler(ctx)
+    }
+
+    /// Permissionless one-time init of the singleton LiquidityHolding PDA + RWT
+    /// ATA (Layer 8 §2.1 / D11.1). Re-running after a successful init reverts.
+    pub fn initialize_liquidity_holding(
+        ctx: Context<InitializeLiquidityHolding>,
+    ) -> Result<()> {
+        crate::instructions::initialize_liquidity_holding::handler(ctx)
+    }
+
+    /// Layer 9 Nexus drain ix — placeholder for Layer 8: every call reverts
+    /// with `NexusNotInitialized` until the Nexus program ID is pinned.
+    pub fn withdraw_liquidity_holding(
+        ctx: Context<WithdrawLiquidityHolding>,
+        amount: u64,
+    ) -> Result<()> {
+        crate::instructions::withdraw_liquidity_holding::handler(ctx, amount)
     }
 }

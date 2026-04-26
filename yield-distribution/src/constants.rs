@@ -53,6 +53,17 @@ pub const RWT_ENGINE_PROGRAM_ID: [u8; 32] = [
     0x49, 0xa1, 0x15, 0xcd, 0x39, 0xdb, 0x48, 0x1f,
 ];
 
+// Layer 9 Nexus program ID — placeholder (all zeros) until Layer 9 deploys.
+// `withdraw_liquidity_holding` checks against this constant: while it remains
+// zeros, every call reverts with `NexusNotInitialized`. After Layer 9 vanity
+// allocation, the bytes here MUST be replaced with the real Nexus program ID.
+//
+// MAINNET-REPLACE: this is a Layer 8 placeholder. Layer 9 deployment will
+// pin the real Nexus program ID here AND ungate the placeholder check below.
+// Until then the LiquidityHolding RWT ATA is a one-way sink (deposit only)
+// — anti-honeypot guarantee per D4.
+pub const NEXUS_PROGRAM_ID_PLACEHOLDER: [u8; 32] = [0u8; 32];
+
 // ----- CPI discriminators -----
 //
 // Pre-computed `sha256("global:<ix_name>")[0..8]`. Verified at build time

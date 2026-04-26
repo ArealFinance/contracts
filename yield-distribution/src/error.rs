@@ -54,4 +54,8 @@ pub enum YdError {
     InvalidPendingAuthority,
     #[msg("Destination address cannot be zero")]
     ZeroDestination,
+    #[msg("LiquidityHolding PDA already initialized")]
+    LiquidityHoldingAlreadyInitialized,
+    #[msg("Layer 9 Nexus authority not yet initialized — withdraw is disabled")]
+    NexusNotInitialized,
 }

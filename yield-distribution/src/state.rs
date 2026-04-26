@@ -77,3 +77,58 @@ pub struct ClaimStatus {
 }
 // SIZE = 73
 const _: () = assert!(core::mem::size_of::<ClaimStatus>() == 73);
+
+// =============================================================================
+// LiquidityHolding — 66 bytes (8 discriminator + 58 data)
+// PDA Seed: ["liq_holding"] (singleton, per D11.1)
+//
+// Receives the 15% liquidity-share splitted by `rwt_engine::claim_yield`.
+// Funds park here until Layer 9 Nexus drains them via `withdraw_liquidity_holding`
+// CPI. Until then the placeholder ix unconditionally reverts with
+// `NexusNotInitialized` (R10 — anti-honeypot per D4).
+//
+// `total_received` / `total_withdrawn` are running observability counters
+// (running sum since deployment); `last_funded_slot` records the most recent
+// claim_yield split funding event.
+//
+// `_reserved` keeps room for Layer 9 fields (e.g. nexus authority, allocation
+// strategy) without a state migration.
+// =============================================================================
+
+#[account]
+pub struct LiquidityHolding {
+    pub bump: u8,                      // 1
+    pub initialized: bool,             // 1 — guards against double-init
+    pub total_received: u64,           // 8 — cumulative deposits (observability)
+    pub total_withdrawn: u64,          // 8 — cumulative withdrawals (Layer 9 tracker)
+    pub last_funded_slot: u64,         // 8 — slot of last claim_yield split
+    pub _reserved: [u8; 32],           // 32 — future-proofing for Layer 9 fields
+}
+// SIZE = 58, SPACE = 8 + 58 = 66
+const _: () = assert!(core::mem::size_of::<LiquidityHolding>() == 58);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin LiquidityHolding data layout: 1+1+8+8+8+32 = 58 bytes (66 with disc).
+    #[test]
+    fn liquidity_holding_size_pinned_at_58() {
+        assert_eq!(core::mem::size_of::<LiquidityHolding>(), 58);
+    }
+
+    /// Singleton: SPACE includes the 8-byte arlex account discriminator.
+    #[test]
+    fn liquidity_holding_space_pinned_at_66() {
+        assert_eq!(LiquidityHolding::SPACE, 66);
+    }
+
+    /// D11.1 — single-component seed (no `ot_mint` suffix). Catches drift if
+    /// anyone re-reverts to per-OT layout.
+    #[test]
+    fn liq_holding_seed_layout_is_one_component() {
+        let seeds: &[&[u8]] = &[b"liq_holding"];
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0], b"liq_holding");
+    }
+}

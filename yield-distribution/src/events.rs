@@ -84,3 +84,24 @@ pub struct AuthorityTransferAccepted {
     pub new_authority: [u8; 32],
     pub timestamp: i64,
 }
+
+#[event]
+pub struct LiquidityHoldingInitialized {
+    pub liquidity_holding: [u8; 32],
+    pub liquidity_holding_ata: [u8; 32],
+    pub payer: [u8; 32],
+    pub timestamp: i64,
+}
+
+// Placeholder — emitted by `withdraw_liquidity_holding` once Layer 9 Nexus
+// drains the holding. Layer 8 ix only reverts; this event is reserved for
+// the Layer 9 implementation.
+#[event]
+pub struct LiquidityHoldingWithdrawn {
+    pub liquidity_holding: [u8; 32],
+    pub recipient: [u8; 32],
+    pub nexus_program: [u8; 32],
+    pub amount: u64,
+    pub total_withdrawn: u64,
+    pub timestamp: i64,
+}
