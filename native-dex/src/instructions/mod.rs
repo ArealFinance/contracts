@@ -11,3 +11,6 @@ pub mod update_pool_creators;
 pub mod pause;
 pub mod authority_transfer;
 pub mod compound_yield;
+// ----- Layer 9 (Liquidity Nexus) -----
+pub mod initialize_nexus;
+pub mod update_nexus_manager;

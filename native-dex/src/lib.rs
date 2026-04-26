@@ -45,6 +45,9 @@ use instructions::update_pool_creators::UpdatePoolCreators;
 use instructions::pause::{PausePool, UnpausePool};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 use instructions::compound_yield::CompoundYield;
+// Layer 9 (Liquidity Nexus)
+use instructions::initialize_nexus::InitializeNexus;
+use instructions::update_nexus_manager::UpdateNexusManager;
 
 declare_id!("DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL");
 
@@ -161,5 +164,28 @@ pub mod native_dex {
         proof: alloc::vec::Vec<[u8; 32]>,
     ) -> Result<()> {
         crate::instructions::compound_yield::handler(ctx, cumulative_amount, proof)
+    }
+
+    // ----- Layer 9 (Liquidity Nexus) -----
+
+    /// Bootstrap the singleton `LiquidityNexus` PDA + initial Manager wallet.
+    /// Authority-gated. Single-init enforced by Arlex `init` constraint.
+    /// Layer 9 §4.1.
+    pub fn initialize_nexus(
+        ctx: Context<InitializeNexus>,
+        manager: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::initialize_nexus::handler(ctx, manager)
+    }
+
+    /// Rotate the Nexus Manager wallet. Authority-gated. Setting
+    /// `new_manager == [0u8; 32]` is the documented on-chain kill-switch
+    /// (D22) — Manager-gated ix revert with `NexusManagerDisabled` until
+    /// Authority rotates back to a non-zero key. Layer 9 §4.8.
+    pub fn update_nexus_manager(
+        ctx: Context<UpdateNexusManager>,
+        new_manager: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::update_nexus_manager::handler(ctx, new_manager)
     }
 }
