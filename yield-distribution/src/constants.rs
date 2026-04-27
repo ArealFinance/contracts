@@ -108,8 +108,15 @@ pub const TOKEN_KIND_RWT: u8 = 1;
 // ----- Deployment-time pins (REPLACE for each environment) -----
 //
 // These placeholder values are the devnet pinned mints. For mainnet, overwrite
-// with the actual addresses before running `arlex-cli build`. The
-// `array_all_zero` assertion below ensures we cannot ship with zero values.
+// with the actual addresses before running `arlex-cli build`. Two compile-time
+// asserts below refuse to ship a binary that still carries the placeholders:
+//
+//   1. `array_all_zero` — catches accidental zero-init.
+//   2. `is_rwt_placeholder` / `is_usdc_placeholder` — R20 tripwire that
+//      fingerprints the exact ASCII-prefix + 0x01-tail pattern below. Gated
+//      behind `cfg(not(feature = "dev-placeholder-mints"))` so devnet builds
+//      can still compile by passing `--features dev-placeholder-mints` (see
+//      `Cargo.toml` and `scripts/e2e-bootstrap.sh`).
 //
 // Devnet placeholder: same ASCII pattern so it's obvious they're placeholders.
 pub const RWT_MINT: [u8; 32] = [
@@ -130,6 +137,26 @@ pub const USDC_MINT: [u8; 32] = [
 const _: () = assert!(!array_all_zero(&RWT_MINT));
 const _: () = assert!(!array_all_zero(&USDC_MINT));
 
+// R20 tripwire: refuse to build with the devnet placeholder bytes unless the
+// `dev-placeholder-mints` feature is explicitly enabled. Mainnet build runbook
+// (see Cargo.toml R20 comment) MUST overwrite these constants with the real
+// pubkeys, then build *without* the feature so this assert verifies the
+// placeholder bytes have actually been replaced.
+#[cfg(not(feature = "dev-placeholder-mints"))]
+const _: () = assert!(
+    !is_rwt_placeholder(&RWT_MINT),
+    "RWT_MINT still carries the devnet R20 placeholder bytes — see Cargo.toml \
+     R20 tripwire comment. Replace with the deployed mainnet RWT mint pubkey \
+     before building without `--features dev-placeholder-mints`."
+);
+#[cfg(not(feature = "dev-placeholder-mints"))]
+const _: () = assert!(
+    !is_usdc_placeholder(&USDC_MINT),
+    "USDC_MINT still carries the devnet R20 placeholder bytes — see Cargo.toml \
+     R20 tripwire comment. Replace with the canonical USDC mint pubkey before \
+     building without `--features dev-placeholder-mints`."
+);
+
 const fn array_all_zero(a: &[u8; 32]) -> bool {
     let mut i = 0;
     let mut zero = true;
@@ -140,4 +167,37 @@ const fn array_all_zero(a: &[u8; 32]) -> bool {
         i += 1;
     }
     zero
+}
+
+#[allow(dead_code)] // used by the cfg-gated R20 tripwire asserts above
+const fn array_zero_in_range(a: &[u8; 32], start: usize, end: usize) -> bool {
+    let mut i = start;
+    while i < end {
+        if a[i] != 0 {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// "RWT" + 28 zeros + 0x01.
+#[allow(dead_code)] // used by the cfg-gated R20 tripwire assert above
+const fn is_rwt_placeholder(a: &[u8; 32]) -> bool {
+    a[0] == 0x52
+        && a[1] == 0x57
+        && a[2] == 0x54
+        && array_zero_in_range(a, 3, 31)
+        && a[31] == 0x01
+}
+
+// "USDC" + 27 zeros + 0x01.
+#[allow(dead_code)] // used by the cfg-gated R20 tripwire assert above
+const fn is_usdc_placeholder(a: &[u8; 32]) -> bool {
+    a[0] == 0x55
+        && a[1] == 0x53
+        && a[2] == 0x44
+        && a[3] == 0x43
+        && array_zero_in_range(a, 4, 31)
+        && a[31] == 0x01
 }

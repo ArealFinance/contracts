@@ -13,3 +13,18 @@ bs58 = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "lib"]
+
+# R20 tripwire — Layer 9 deferred mainnet gate.
+#
+# The `RWT_MINT` and `USDC_MINT` constants in `src/constants.rs` ship with
+# devnet placeholder bytes (ASCII prefix + `0x01` tail). A const-fn assert
+# in `constants.rs` REFUSES to build with the placeholder values UNLESS
+# the `dev-placeholder-mints` feature is enabled.
+#
+# Devnet builds (CI, e2e-bootstrap, local dev) must pass
+#     cargo build-sbf --features dev-placeholder-mints
+# Mainnet build runbook (R20 closure) MUST first overwrite the placeholder
+# bytes with the real mint pubkeys, then build *without* this feature so
+# the assert verifies the bytes have actually been replaced.
+[features]
+dev-placeholder-mints = []
