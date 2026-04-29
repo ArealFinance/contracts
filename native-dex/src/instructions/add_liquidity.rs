@@ -119,6 +119,48 @@ pub fn handler(
 /// position or snapshot already aligned). Caller is responsible for
 /// emitting `LpFeesClaimed` so the event keeps `clock`, `provider_key`,
 /// and `pool_key` in the parent's lexical scope.
+/// R46 escalation child helper — fresh-init LpPosition CreateAccount.
+///
+/// Moved out of `add_liquidity_internal` so the [Seed; 4] + Signer +
+/// lamports + rent + lp_pda + lp_bump locals (~256B union worst-case) live
+/// in a child stack frame instead of sharing the parent's match-arm budget
+/// with the auto-claim outbound branch. The caller still gets `lp_bump` to
+/// populate `lp.bump` on the freshly-initialised LpPosition.
+#[inline(never)]
+pub(crate) fn create_lp_position_account<'info>(
+    payer: &'info AccountView,
+    lp_position: &'info AccountView,
+    program_id: &Address,
+    pool_key: &[u8; 32],
+    provider_key: &[u8; 32],
+) -> Result<u8> {
+    let (lp_pda, lp_bump) = arlex_lang::find_program_address(
+        &[b"lp", pool_key.as_ref(), provider_key.as_ref()],
+        program_id,
+    );
+    if lp_position.address().as_ref() != lp_pda.as_ref() {
+        return Err(ProgramError::InvalidSeeds);
+    }
+
+    let rent = pinocchio::sysvars::rent::Rent::get()?;
+    let lamports = rent.minimum_balance(LpPosition::SPACE);
+    let bump_arr = [lp_bump];
+    arlex_lang::system::instructions::CreateAccount {
+        from: payer,
+        to: lp_position,
+        lamports,
+        space: LpPosition::SPACE as u64,
+        owner: program_id,
+    }.invoke_signed(&[Signer::from(&[
+        Seed::from(b"lp" as &[u8]),
+        Seed::from(pool_key.as_ref()),
+        Seed::from(provider_key.as_ref()),
+        Seed::from(bump_arr.as_ref()),
+    ])])?;
+
+    Ok(lp_bump)
+}
+
 #[inline(never)]
 pub(crate) fn auto_claim_lp_fees<'info>(
     vault_a: &'info AccountView,
@@ -307,29 +349,18 @@ pub(crate) fn add_liquidity_internal<'info>(
     // Check if LpPosition already exists (data_len > 0 means initialized)
     let lp_data_len = accounts.lp_position.data_len();
     if lp_data_len == 0 {
-        // Create new LpPosition PDA
-        let (lp_pda, lp_bump) = arlex_lang::find_program_address(
-            &[b"lp", pool_key.as_ref(), provider_key.as_ref()],
+        // R46 escalation: extract fresh-init CreateAccount + Signer locals into
+        // a child frame so the [Seed; 4] + Signer + lamports + rent locals
+        // (~256B union worst-case) don't share parent stack budget with the
+        // auto-claim helper outbound branch's seeds. Returns lp_bump for
+        // downstream LpPosition::init to populate `lp.bump`.
+        let lp_bump = create_lp_position_account(
+            accounts.payer,
+            accounts.lp_position,
             program_id,
-        );
-        if accounts.lp_position.address().as_ref() != lp_pda.as_ref() {
-            return Err(ProgramError::InvalidSeeds);
-        }
-
-        let rent = pinocchio::sysvars::rent::Rent::get()?;
-        let lamports = rent.minimum_balance(LpPosition::SPACE);
-        arlex_lang::system::instructions::CreateAccount {
-            from: accounts.payer,
-            to: accounts.lp_position,
-            lamports,
-            space: LpPosition::SPACE as u64,
-            owner: program_id,
-        }.invoke_signed(&[Signer::from(&[
-            Seed::from(b"lp" as &[u8]),
-            Seed::from(pool_key.as_ref()),
-            Seed::from(provider_key.as_ref()),
-            Seed::from(&[lp_bump]),
-        ])])?;
+            &pool_key,
+            &provider_key,
+        )?;
 
         let lp = LpPosition::init(accounts.lp_position, program_id)?;
         lp.pool = pool_key;
