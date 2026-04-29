@@ -28,6 +28,28 @@ Public RPC for the test-validator: [`http://rpc.areal.finance`](http://rpc.areal
 
 See [docs.areal.finance — Liquidity Nexus](https://docs.areal.finance/architecture/layer9-liquidity-nexus) for the subsystem overview.
 
+### Layer 10 (2026-04-29)
+
+- **R20 RWT mint-pin migration: closed.** A compile-time tripwire in
+  `yield-distribution`'s build script makes `cargo build-sbf` fail if the
+  `dev-placeholder-mints` feature is enabled in a production build. Production
+  artifacts MUST be built with the canonical RWT mint pinned in
+  `constants.rs`; dev/test builds opt into the placeholder via the cargo
+  feature.
+- **Deployer-zero-authority cryptographic gate.** After Phase 7 of
+  `scripts/deploy.sh` lands, the on-chain `authority` field of all five
+  contract-state PDAs (`OtGovernance`, `FutarchyConfig`, `RwtVault`,
+  `DexConfig`, `DistributionConfig`) points at the multisig. The deployer key
+  retains zero remaining authority — verified by both a POSITIVE audit
+  (every contract == expected target) and a NEGATIVE audit (deployer is not
+  the authority anywhere).
+- **No contract-logic delta in Layer 10.** R20 is a `constants.rs` byte
+  change plus the build-script tripwire — no instruction surface or state
+  layout changed. Layer 9's 9 Nexus ix and the LP-fee accumulator are the
+  most recent contract-side additions.
+
+See [`docs.areal.finance/architecture/layer10-bootstrap`](https://docs.areal.finance/architecture/layer10-bootstrap) for the deploy-side walkthrough.
+
 ## CPI graph
 
 ```
