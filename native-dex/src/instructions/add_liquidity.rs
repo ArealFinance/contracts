@@ -101,6 +101,70 @@ pub fn handler(
     )
 }
 
+/// Layer 10 R46 — auto-claim outbound LP-fee transfers extracted into a
+/// `#[inline(never)]` child frame so the [Seed; 4] arrays + Signer wrappers
+/// live in their own stack slot rather than unioning with the caller's
+/// fresh-init Signer locals (parent handlers — `add_liquidity_internal` and
+/// `zap_liquidity_internal` — already allocate a CreateAccount Signer plus
+/// inbound provider→vault Transfer Signers, the additional pool-PDA seeds
+/// for the outbound side were pushing the dispatcher's worst-case union
+/// frame ~8B over the SBF 4096-byte budget; observed at runtime as
+/// `Access violation in stack frame 1 at address 0x200001ff8 of size 8`
+/// on `add_liquidity` during Phase F + Phase L of the bootstrap chain
+/// — Layer 10 SD-32 closure, 2026-04-29).
+///
+/// Each side reuses the same canonical pool seeds
+/// (`["pool", token_a_mint, token_b_mint, bump]`); the `pool_state` is the
+/// vault authority. Skipped per side when its claimable is zero (fresh
+/// position or snapshot already aligned). Caller is responsible for
+/// emitting `LpFeesClaimed` so the event keeps `clock`, `provider_key`,
+/// and `pool_key` in the parent's lexical scope.
+#[inline(never)]
+pub(crate) fn auto_claim_lp_fees<'info>(
+    vault_a: &'info AccountView,
+    vault_b: &'info AccountView,
+    provider_token_a: &'info AccountView,
+    provider_token_b: &'info AccountView,
+    pool_state: &'info AccountView,
+    token_a_mint: &[u8; 32],
+    token_b_mint: &[u8; 32],
+    pool_bump: u8,
+    auto_claim_a: u64,
+    auto_claim_b: u64,
+) -> Result<()> {
+    if auto_claim_a > 0 {
+        let bump_arr = [pool_bump];
+        let seeds_a = [
+            Seed::from(b"pool" as &[u8]),
+            Seed::from(token_a_mint.as_ref()),
+            Seed::from(token_b_mint.as_ref()),
+            Seed::from(bump_arr.as_ref()),
+        ];
+        arlex_lang::token::instructions::Transfer {
+            from: vault_a,
+            to: provider_token_a,
+            authority: pool_state,
+            amount: auto_claim_a,
+        }.invoke_signed(&[Signer::from(&seeds_a)])?;
+    }
+    if auto_claim_b > 0 {
+        let bump_arr = [pool_bump];
+        let seeds_b = [
+            Seed::from(b"pool" as &[u8]),
+            Seed::from(token_a_mint.as_ref()),
+            Seed::from(token_b_mint.as_ref()),
+            Seed::from(bump_arr.as_ref()),
+        ];
+        arlex_lang::token::instructions::Transfer {
+            from: vault_b,
+            to: provider_token_b,
+            authority: pool_state,
+            amount: auto_claim_b,
+        }.invoke_signed(&[Signer::from(&seeds_b)])?;
+    }
+    Ok(())
+}
+
 /// Core add-liquidity logic — usable by user-signed `add_liquidity` and by
 /// PDA-signed alternative callers (e.g. future layers passing
 /// `Some(&[Signer])`).
@@ -114,6 +178,7 @@ pub fn handler(
 ///     seeds.
 ///   - `Some(seeds)` — authority is a PDA; the inbound transfers are invoked
 ///     with the supplied signer seeds.
+#[inline(never)]
 pub(crate) fn add_liquidity_internal<'info>(
     accounts: &AddLiquidityAccountsView<'info>,
     remaining_accounts: &'info [AccountView],
@@ -345,41 +410,26 @@ pub(crate) fn add_liquidity_internal<'info>(
         }
     }
 
-    // Layer 9 D29 — auto-claim outbound transfers. Vault → provider ATA on
-    // each side that accrued pending fees. Authority is the pool PDA (vault
-    // owner), so the seeds are the canonical create_pool seeds: ["pool",
-    // token_a_mint, token_b_mint, bump]. Skipped when both sides are zero
-    // (fresh position, or existing position with snapshot already aligned).
+    // Layer 10 R46 — auto-claim outbound transfers extracted into a child
+    // frame (`auto_claim_lp_fees`) so the [Seed; 4] arrays + Signer wrappers
+    // live in their own stack slot rather than unioning with this handler's
+    // fresh-init Signer locals (CreateAccount above + provider→vault
+    // transfers). This shaves the parent frame back under the SBF 4096-byte
+    // budget; see crate-level "BPF stack-frame budget" doc-comment.
+    auto_claim_lp_fees(
+        accounts.vault_a,
+        accounts.vault_b,
+        accounts.provider_token_a,
+        accounts.provider_token_b,
+        accounts.pool_state,
+        &pool_token_a_mint,
+        &pool_token_b_mint,
+        pool_bump,
+        auto_claim_a,
+        auto_claim_b,
+    )?;
+
     if auto_claim_a > 0 || auto_claim_b > 0 {
-        let pool_bump_arr = [pool_bump];
-        if auto_claim_a > 0 {
-            let seeds = [
-                Seed::from(b"pool" as &[u8]),
-                Seed::from(pool_token_a_mint.as_ref()),
-                Seed::from(pool_token_b_mint.as_ref()),
-                Seed::from(pool_bump_arr.as_ref()),
-            ];
-            arlex_lang::token::instructions::Transfer {
-                from: accounts.vault_a,
-                to: accounts.provider_token_a,
-                authority: accounts.pool_state,
-                amount: auto_claim_a,
-            }.invoke_signed(&[Signer::from(&seeds)])?;
-        }
-        if auto_claim_b > 0 {
-            let seeds = [
-                Seed::from(b"pool" as &[u8]),
-                Seed::from(pool_token_a_mint.as_ref()),
-                Seed::from(pool_token_b_mint.as_ref()),
-                Seed::from(pool_bump_arr.as_ref()),
-            ];
-            arlex_lang::token::instructions::Transfer {
-                from: accounts.vault_b,
-                to: accounts.provider_token_b,
-                authority: accounts.pool_state,
-                amount: auto_claim_b,
-            }.invoke_signed(&[Signer::from(&seeds)])?;
-        }
         emit!(LpFeesClaimed {
             recipient: provider_key,
             pool: pool_key,

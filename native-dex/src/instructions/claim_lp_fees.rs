@@ -126,6 +126,7 @@ pub fn handler(ctx: Context<ClaimLpFees>) -> Result<()> {
 ///     the authority is not invoked as a CPI signer here. Both `None`
 ///     (user-signed handler) and `Some(seeds)` produce identical CPI
 ///     behaviour today. Threaded for future-proofing.
+#[inline(never)]
 pub(crate) fn claim_lp_fees_internal<'info>(
     accounts: &ClaimLpFeesAccountsView<'info>,
     program_id: &Address,

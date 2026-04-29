@@ -11,27 +11,25 @@
 //!
 //! # BPF stack-frame budget
 //!
-//! After Layer 9 Substep 5 lands the 4 final Nexus handlers (`nexus_deposit`,
-//! `nexus_record_deposit`, `nexus_withdraw_profits`, `nexus_claim_rewards`),
-//! the entrypoint dispatcher's static-analysis frame size is **4160 bytes**
-//! (64 bytes over the 4096-byte SBF stack budget; ~8 bytes "Stack offset"
-//! after slot-removal optimisations). The overshoot stems from the BPF
-//! linker's conservative match-arm union analysis and is not exercised at
-//! runtime (each individual ix handler's frame is bounded; the union is
-//! never simultaneously live). Optimisations applied to keep the overshoot
-//! within tolerance:
-//!   - `#[inline(never)]` on every Layer 9 Substep 5 handler entry to
-//!     prevent inlining the handler body into the dispatcher frame.
-//!   - `token_program` slot removed from the 4 new handlers' Accounts
-//!     structs (callers pass the SPL Token program account via remaining
-//!     accounts; pinocchio_token hardcodes the program ID).
-//!   - Manual `signer.address() == dex_config.authority` byte-compare in
-//!     place of the framework's `has_one = authority` constraint on the
-//!     two Authority-gated handlers (`nexus_withdraw_profits`,
-//!     `nexus_claim_rewards`); identical access-control semantics.
+//! Layer 9 Substep 5 narrowed the entrypoint dispatcher's worst-case frame
+//! from ~4400B to 4160B (8B over the SBF 4096-byte budget) via
+//! `#[inline(never)]` on every handler entry, `token_program` slot removal
+//! in the four Nexus handlers, and manual byte-compare for `has_one =
+//! authority` on `nexus_withdraw_profits` / `nexus_claim_rewards`. The 8B
+//! overshoot proved to be runtime-live, not a static-analysis artefact:
+//! Layer 10 SD-32 closure (2026-04-29) observed
+//! `Access violation in stack frame 1 at address 0x200001ff8 of size 8`
+//! in `add_liquidity` (Phase F + Phase L of the bootstrap chain).
 //!
-//! Future Layer 9 instructions or any additional ix should re-validate the
-//! frame budget via `cargo build-sbf` before merging.
+//! Layer 10 R46 closed the overshoot by extracting the LP-fee auto-claim
+//! outbound branch into a `#[inline(never)]` child helper
+//! (`add_liquidity::auto_claim_lp_fees`) shared between
+//! `add_liquidity_internal` and `zap_liquidity_internal`. The helper's
+//! `[Seed; 4]` + `Signer` allocations now live in a child stack frame
+//! instead of unioning with the parent's fresh-init `Signer` locals. Net
+//! frame estimate post-R46: ~3880B (>200B headroom). Future ix or
+//! refactors should re-validate via `cargo build-sbf` and grep
+//! `'Stack offset'` in the build log.
 //!
 //! # Unsafe (L-5 audit note)
 //!

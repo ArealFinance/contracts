@@ -96,6 +96,7 @@ pub fn handler(
 ///     closing the LP position; no inbound authority-signed CPI is required.
 ///   - Both `None` (user-signed handler) and `Some(seeds)` (PDA-signed caller)
 ///     produce identical CPI behaviour today. Threaded for future-proofing.
+#[inline(never)]
 pub(crate) fn remove_liquidity_internal<'info>(
     accounts: &RemoveLiquidityAccountsView<'info>,
     remaining_accounts: &'info [AccountView],

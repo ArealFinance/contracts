@@ -107,6 +107,7 @@ pub fn handler(
 /// Pool-side outbound transfers (`vault_out -> user_token_out`,
 /// `vault -> areal_fee_account`, `vault -> ot_fee_account`) always sign with
 /// the pool PDA seeds derived from `PoolState`, regardless of caller.
+#[inline(never)]
 pub(crate) fn swap_internal<'info>(
     accounts: &SwapAccountsView<'info>,
     remaining_accounts: &'info [AccountView],
