@@ -142,7 +142,7 @@ pub fn handler(
         );
 
         let rent = Rent::get()?;
-        let lamports = rent.minimum_balance(ClaimStatus::SPACE);
+        let lamports = rent.try_minimum_balance(ClaimStatus::SPACE)?;
 
         let cs_bump_arr = [cs_bump];
         let dist_seed_bytes = ctx.accounts.distributor.address();

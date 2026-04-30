@@ -1,3 +1,11 @@
+// Arlex `#[derive(Accounts)]` proc-macro generates struct-field bindings
+// that aren't always read by every handler — those are purely structural.
+// `declare_id!` + `#[program]` emit `cfg(feature = "solana")` gates that
+// the contract crates don't expose as a feature. Crate-level allow keeps
+// the noise out of `cargo build`. Real unused-var bugs in handler logic
+// are caught by `clippy --strict`.
+#![allow(unused_variables, unexpected_cfgs)]
+
 //! Yield Distribution — perpetual merkle-based RWT yield streams with per-claimant vesting.
 //!
 //! 13 instructions (Layer 8 added `convert_to_rwt` + Layer 9 R20 wired the

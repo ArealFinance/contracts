@@ -143,7 +143,7 @@ pub(crate) fn create_lp_position_account<'info>(
     }
 
     let rent = pinocchio::sysvars::rent::Rent::get()?;
-    let lamports = rent.minimum_balance(LpPosition::SPACE);
+    let lamports = rent.try_minimum_balance(LpPosition::SPACE)?;
     let bump_arr = [lp_bump];
     arlex_lang::system::instructions::CreateAccount {
         from: payer,

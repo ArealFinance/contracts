@@ -375,7 +375,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
         }
 
         let rent = pinocchio::sysvars::rent::Rent::get()?;
-        let lamports = rent.minimum_balance(LpPosition::SPACE);
+        let lamports = rent.try_minimum_balance(LpPosition::SPACE)?;
         arlex_lang::system::instructions::CreateAccount {
             from: accounts.payer,
             to: accounts.lp_position,

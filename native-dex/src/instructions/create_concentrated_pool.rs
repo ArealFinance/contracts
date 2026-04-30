@@ -108,7 +108,7 @@ pub fn handler(
         return Err(ProgramError::InvalidSeeds);
     }
 
-    let bin_lamports = rent.minimum_balance(BinArray::SPACE);
+    let bin_lamports = rent.try_minimum_balance(BinArray::SPACE)?;
     arlex_lang::system::instructions::CreateAccount {
         from: ctx.accounts.creator,
         to: ctx.accounts.bin_array,

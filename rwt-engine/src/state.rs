@@ -1,5 +1,4 @@
 use arlex_lang::prelude::*;
-use crate::constants::*;
 
 // =============================================================================
 // RwtVault — 267 bytes (8 discriminator + 259 data)

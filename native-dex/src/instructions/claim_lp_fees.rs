@@ -94,6 +94,9 @@ pub(crate) struct ClaimLpFeesAccountsView<'info> {
     pub pool_vault_b: &'info AccountView,
     pub authority_token_a: &'info AccountView,
     pub authority_token_b: &'info AccountView,
+    /// Forward-compat slot — pinocchio CPIs sign the SPL Token program
+    /// reference inline so this view-projection field is structural only.
+    #[allow(dead_code)]
     pub token_program: &'info AccountView,
 }
 

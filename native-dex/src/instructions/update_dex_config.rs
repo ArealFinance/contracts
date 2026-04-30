@@ -5,7 +5,6 @@ use crate::constants::*;
 use crate::error::DexError;
 use crate::events::DexConfigUpdated;
 use crate::state::DexConfig;
-use crate::validation::pubkey_bytes;
 
 #[derive(Accounts)]
 pub struct UpdateDexConfig<'info> {

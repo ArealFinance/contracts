@@ -89,7 +89,7 @@ pub fn handler(
     // --- Create RWT Mint (82 bytes, SPL Token owner) ---
     // Allocate the account via System Program CPI (rwt_mint is signer keypair)
     let rent = pinocchio::sysvars::rent::Rent::get()?;
-    let lamports = rent.minimum_balance(82);
+    let lamports = rent.try_minimum_balance(82)?;
     arlex_lang::system::instructions::CreateAccount {
         from: ctx.accounts.deployer,
         to: ctx.accounts.rwt_mint,

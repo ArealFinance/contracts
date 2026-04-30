@@ -10,7 +10,6 @@
 
 use arlex_lang::prelude::*;
 use pinocchio::sysvars::rent::Rent;
-use pinocchio::sysvars::Sysvar;
 
 use crate::constants::*;
 use crate::error::DexError;
@@ -73,7 +72,7 @@ pub fn create_pool_account(
         return Err(ProgramError::InvalidSeeds);
     }
 
-    let lamports = rent.minimum_balance(PoolState::SPACE);
+    let lamports = rent.try_minimum_balance(PoolState::SPACE)?;
     arlex_lang::system::instructions::CreateAccount {
         from: creator,
         to: pool_state,
@@ -101,7 +100,7 @@ pub fn init_vault_pair(
     pool_pda: &Address,
     rent: &Rent,
 ) -> ProgramResult {
-    let vault_rent = rent.minimum_balance(SPL_TOKEN_ACCOUNT_SIZE as usize);
+    let vault_rent = rent.try_minimum_balance(SPL_TOKEN_ACCOUNT_SIZE as usize)?;
 
     // Vault A
     arlex_lang::system::instructions::CreateAccount {
