@@ -189,9 +189,29 @@ pub(crate) fn swap_internal<'info>(
     // close to where the fee side is determined for future readers.
     let _token_a_is_rwt_side = token_a_is_rwt_side;
 
+    // Misconfigured-cluster fallback: when `dex_config.areal_fee_destination`
+    // was bootstrapped to a token account whose mint is NOT RWT (e.g. the
+    // Testnet bootstrap accidentally pointed it at the deployer's USDC ATA),
+    // the protocol-fee transfer at step 3 below would revert with
+    // `MintMismatch` (SPL Token 0x3). Detect that here and forgive the
+    // protocol fee entirely — route the full `fee_total` to LP via
+    // `effective_lp_share_bps = BPS_DENOMINATOR`. Result: `fee_protocol`
+    // computes to 0, the conditional transfer at step 3 is skipped, and
+    // reserves stay consistent (no fee_protocol subtraction either, since
+    // the math uses the same value). Cluster-wide flag — no per-pool
+    // toggle needed.
+    let effective_lp_share_bps: u16 = {
+        let dest_mint = read_token_account_mint(accounts.areal_fee_account)?;
+        if dest_mint == RWT_MINT {
+            config.lp_fee_share_bps
+        } else {
+            BPS_DENOMINATOR as u16
+        }
+    };
+
     if input_is_rwt {
         // Selling RWT: fee deducted from input BEFORE swap
-        let fees = calculate_fees(amount_in, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
+        let fees = calculate_fees(amount_in, pool.fee_bps, effective_lp_share_bps, pool.has_ot_treasury)?;
         let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
             .ok_or(ProgramError::from(DexError::MathOverflow))?;
         net_input = amount_in.checked_sub(total_deducted)
@@ -259,7 +279,7 @@ pub(crate) fn swap_internal<'info>(
             // exclude fee_lp post-D28).
             concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
 
-            let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
+            let fees = calculate_fees(gross_out, pool.fee_bps, effective_lp_share_bps, pool.has_ot_treasury)?;
 
             let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
@@ -271,7 +291,7 @@ pub(crate) fn swap_internal<'info>(
         } else {
             gross_out = constant_product_output(reserve_in, reserve_out, net_input)?;
 
-            let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
+            let fees = calculate_fees(gross_out, pool.fee_bps, effective_lp_share_bps, pool.has_ot_treasury)?;
             let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
             amount_out = gross_out.checked_sub(total_deducted)
