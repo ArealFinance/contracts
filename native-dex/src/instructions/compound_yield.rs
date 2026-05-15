@@ -145,6 +145,16 @@ pub fn handler(
             return Err(ProgramError::from(DexError::PoolNotActive).into());
         }
 
+        // TODO(P1): consider gating compound_yield on `dex_config.is_active` for
+        // symmetry with swap/add/zap (which check BOTH pool and global pause).
+        // Spec (docs/contracts/native-dex.mdx compound_yield Accordion) currently
+        // lists only `pool.is_active` as the validation gate and does not
+        // include `dex_config` in the Accounts. Promoting global pause to a
+        // true kill-switch here is a docs-first decision: spec must add
+        // `dex_config` to compound_yield's Accounts before code follows, since
+        // it is a breaking interface change for SDK builders and the
+        // yield-claim crank. Deferred — see P0-1/P0-2 review notes.
+
         // Determine RWT side. is_rwt_mint compares against constants::RWT_MINT.
         let rwt_side: u8 = if is_rwt_mint(&pool.token_a_mint) {
             0
