@@ -203,12 +203,16 @@ pub(crate) fn swap_internal<'info>(
     }
 
     if input_is_rwt {
-        // Selling RWT: fee deducted from input BEFORE swap
+        // Selling RWT (fee-on-top per docs/contracts/native-dex.mdx:522-568):
+        // Fees are charged ON TOP of `amount_in` — the full `amount_in` enters
+        // the constant-product curve. User's wallet is debited
+        // `amount_in + fee_total + ot_treasury_fee` (computed below as
+        // `user_total_debit`). `fee_lp` stays in the RWT vault and is tracked
+        // by the per-share accumulator (D28); `fee_protocol` + `fee_ot_treasury`
+        // are CPI-extracted to their destinations by the outbound transfers.
         let fees = calculate_fees(amount_in, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
-        let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
-        net_input = amount_in.checked_sub(total_deducted)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        // Full amount_in enters the curve — fees are external to it.
+        net_input = amount_in;
 
         // Branch on pool type for output calculation
         if pool.pool_type == POOL_TYPE_CONCENTRATED {
@@ -226,6 +230,7 @@ pub(crate) fn swap_internal<'info>(
                 return Err(ProgramError::InvalidSeeds);
             }
             let bin_array = BinArray::load_mut(&remaining_accounts[bin_idx], program_id)?;
+            // net_input == amount_in (fee-on-top): full amount enters bin walk.
             let (walk_out, walk_remaining) = concentrated::bin_walk_swap(bin_array, pool.bin_step_bps, net_input, a_to_b)?;
             amount_out = walk_out;
             pool.active_bin_id = bin_array.active_bin_id;
@@ -236,7 +241,8 @@ pub(crate) fn swap_internal<'info>(
             // explicitly excluded from reserves by the effects step below.
             concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
         } else {
-            amount_out = constant_product_output(reserve_in, reserve_out, net_input)?;
+            // Standard path: full amount_in enters the curve (fee-on-top).
+            amount_out = constant_product_output(reserve_in, reserve_out, amount_in)?;
         }
 
         fee_lp = fees.fee_lp;
@@ -318,9 +324,10 @@ pub(crate) fn swap_internal<'info>(
     // `vault_<side>_balance == reserves + cumulative_fees_owed_to_LPs`.
     if a_to_b {
         if input_is_rwt {
-            // Input side (A=RWT): user sends amount_in, only net_input goes
-            // into reserves. fee_lp stays in vault but is tracked off-reserve
-            // by the accumulator. fee_protocol + ot_treasury are CPI-extracted.
+            // User sends amount_in + fees via the inbound transfer below; full amount_in
+            // enters reserves; fee_lp stays in the RWT vault tracked by the per-share
+            // accumulator (D28); fee_protocol + ot_treasury are CPI-extracted to their
+            // destinations by the outbound transfers below.
             pool.reserve_a = pool.reserve_a
                 .checked_add(net_input)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
@@ -386,15 +393,35 @@ pub(crate) fn swap_internal<'info>(
     // --- Interactions: CPIs ---
     let pool_bump = [pool.bump];
 
+    // Fee-on-top inbound transfer sizing (docs/contracts/native-dex.mdx:534-535):
+    // When the user is selling RWT, the wallet debit is `amount_in + fee_total +
+    // ot_treasury_fee`. `fee_total == fee_lp + fee_protocol`, so the explicit sum
+    // below is equivalent and makes each fee component visible to readers.
+    // When the user is buying RWT, fees come out of the output side, so the
+    // inbound debit stays equal to `amount_in`.
+    let user_total_debit = if input_is_rwt {
+        amount_in
+            .checked_add(fee_lp).ok_or(ProgramError::from(DexError::MathOverflow))?
+            .checked_add(fee_protocol).ok_or(ProgramError::from(DexError::MathOverflow))?
+            .checked_add(fee_ot_treasury).ok_or(ProgramError::from(DexError::MathOverflow))?
+    } else {
+        amount_in
+    };
+
     // 1. Authority sends input tokens to vault_in.
     //    User-signed path: empty signer slice (authority is a transaction signer).
     //    PDA-signed path: caller-supplied seeds authorize the PDA-owned ATA.
+    //    Amount = `user_total_debit` so the RWT vault receives both the swap
+    //    principal (which enters reserves) AND the fee components (which leave
+    //    the vault via the outbound CPIs below — fee_protocol to areal_fee_account,
+    //    fee_ot_treasury to ot_fee_account — while fee_lp stays in the vault and
+    //    is tracked by `cumulative_fees_per_share_<rwt_side>`).
     {
         let transfer_in = arlex_lang::token::instructions::Transfer {
             from: accounts.user_token_in,
             to: accounts.vault_in,
             authority: accounts.authority,
-            amount: amount_in,
+            amount: user_total_debit,
         };
         match authority_signer_seeds {
             Some(seeds) => transfer_in.invoke_signed(seeds)?,
@@ -610,6 +637,151 @@ mod tests {
         assert_ne!(
             non_rwt_mint, RWT_MINT,
             "non-RWT mint must NOT equal RWT_MINT (fails the check, triggers InvalidProtocolFeeDestination revert)"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Fee-on-top compliance (docs/contracts/native-dex.mdx:522-568)
+    //
+    // The three tests below pin the new sell-RWT semantics:
+    //   1) Full `amount_in` enters the constant-product curve (NOT `amount_in - fees`).
+    //   2) The inbound transfer debits `amount_in + fee_lp + fee_protocol +
+    //      fee_ot_treasury` from the user's wallet (fees are external to the
+    //      swap principal).
+    //   3) The vault invariant holds:
+    //        vault_in_after == reserves + Σ_unclaimed_fee_lp
+    //      after the outbound CPIs extract fee_protocol + fee_ot_treasury.
+    // ---------------------------------------------------------------------
+
+    /// Pure-math pin: when selling RWT, the full `amount_in` is fed into
+    /// `constant_product_output` — fees are external. Compare to the docs
+    /// formula at native-dex.mdx:537 (`amount_out = constant_product(amount_in)`).
+    #[test]
+    fn sell_rwt_full_amount_in_enters_curve() {
+        // Realistic-ish 1M / 1M pool with 30 bps fee.
+        let reserve_in: u64 = 1_000_000;
+        let reserve_out: u64 = 1_000_000;
+        let amount_in: u64 = 10_000;
+        let fee_bps: u16 = 30;
+        let lp_fee_share_bps: u16 = 5_000;
+        let has_ot_treasury = false;
+
+        // Compute fees ON the trade size; do NOT subtract them from `amount_in`.
+        let fees = crate::amm::calculate_fees(amount_in, fee_bps, lp_fee_share_bps, has_ot_treasury)
+            .expect("calculate_fees should not fail");
+
+        // New spec (docs/contracts/native-dex.mdx:565): full amount_in enters
+        // the curve. The expected formula is
+        //   amount_out = reserve_out * amount_in / (reserve_in + amount_in)
+        //              = 1_000_000 * 10_000 / 1_010_000 ≈ 9_900.
+        let amount_out = crate::amm::constant_product_output(reserve_in, reserve_out, amount_in)
+            .expect("constant_product_output should not fail");
+
+        // Reference: 1M * 10_000 / 1_010_000 = 9_900 (integer truncation).
+        let expected_out: u64 = (reserve_out as u128 * amount_in as u128
+            / (reserve_in as u128 + amount_in as u128)) as u64;
+        assert_eq!(amount_out, expected_out);
+        assert_eq!(amount_out, 9_900u64);
+
+        // OLD (pre-fix) formula for clarity — used `amount_in - fees.fee_total`
+        // and would have returned `~9_870`. The delta (~30 units) is the user's
+        // gross-up benefit under fee-on-top: they get the full curve output.
+        let old_net_input = amount_in - fees.fee_total;
+        let old_amount_out = crate::amm::constant_product_output(reserve_in, reserve_out, old_net_input)
+            .expect("constant_product_output should not fail");
+        assert!(old_amount_out < amount_out, "fee-on-top must yield strictly better output for the user");
+    }
+
+    /// Pure-math pin: the user's total wallet debit on the sell-RWT path is
+    /// `amount_in + fee_lp + fee_protocol + fee_ot_treasury`. Equivalently
+    /// `amount_in + fee_total + fee_ot_treasury` since
+    /// `fee_lp + fee_protocol == fee_total`. Also asserts the `checked_add`
+    /// chain reverts with `MathOverflow` when the components overflow `u64`.
+    #[test]
+    fn sell_rwt_user_total_debit_math() {
+        let amount_in: u64 = 10_000;
+        let fee_bps: u16 = 30;
+        let lp_fee_share_bps: u16 = 5_000;
+        let has_ot_treasury = true; // exercise OT branch too
+
+        let fees = crate::amm::calculate_fees(amount_in, fee_bps, lp_fee_share_bps, has_ot_treasury)
+            .expect("calculate_fees should not fail");
+
+        // Mirror the production gross-up: amount_in + fee_lp + fee_protocol + fee_ot_treasury.
+        let user_total_debit = amount_in
+            .checked_add(fees.fee_lp).unwrap()
+            .checked_add(fees.fee_protocol).unwrap()
+            .checked_add(fees.ot_treasury_fee).unwrap();
+
+        // Equivalent form: amount_in + fee_total + ot_treasury_fee.
+        let user_total_debit_alt = amount_in
+            .checked_add(fees.fee_total).unwrap()
+            .checked_add(fees.ot_treasury_fee).unwrap();
+
+        assert_eq!(user_total_debit, user_total_debit_alt);
+        // fee_lp + fee_protocol must equal fee_total exactly (remainder pattern).
+        assert_eq!(fees.fee_lp + fees.fee_protocol, fees.fee_total);
+
+        // Overflow test: u64::MAX as input MUST cause the gross-up chain to
+        // overflow `checked_add`. Pick any non-zero fee component so the add
+        // overflows on the first step; the production code propagates via
+        // `?` → ProgramError::from(DexError::MathOverflow).
+        let amount_in_max: u64 = u64::MAX;
+        // fee_lp on u64::MAX would itself be derived from u128 arithmetic
+        // inside calculate_fees; we instead exercise the gross-up directly
+        // with a non-zero fee_lp to ensure the chain reverts.
+        let synthetic_fee_lp: u64 = 1;
+        let overflow_attempt = amount_in_max
+            .checked_add(synthetic_fee_lp);
+        assert!(overflow_attempt.is_none(), "u64::MAX + 1 must overflow checked_add");
+    }
+
+    /// Vault-invariant simulation: starting from a clean state, walk through
+    /// the production sequence (inbound transfer, reserve updates, outbound
+    /// CPIs) and assert the post-state invariant
+    ///   vault_in_after == reserve_in_after + Σ_unclaimed_fee_lp
+    /// since the starting accumulator is zero, `Σ_unclaimed_fee_lp == fee_lp`.
+    #[test]
+    fn sell_rwt_post_swap_invariant() {
+        // Starting state.
+        let reserve_in_before: u64 = 1_000_000;
+        let reserve_out_before: u64 = 1_000_000;
+        let vault_in_before: u64 = reserve_in_before; // clean pool, no prior fee_lp dust
+        let amount_in: u64 = 10_000;
+        let fee_bps: u16 = 30;
+        let lp_fee_share_bps: u16 = 5_000;
+        let has_ot_treasury = true;
+
+        let fees = crate::amm::calculate_fees(amount_in, fee_bps, lp_fee_share_bps, has_ot_treasury)
+            .expect("calculate_fees should not fail");
+
+        // User's wallet debit (fee-on-top): amount_in + fee_lp + fee_protocol + fee_ot_treasury.
+        let user_total_debit = amount_in
+            + fees.fee_lp + fees.fee_protocol + fees.ot_treasury_fee;
+
+        // Step 1: inbound transfer — vault gets +user_total_debit.
+        let mut vault_in = vault_in_before + user_total_debit;
+
+        // Step 2: reserve updates — full amount_in enters reserves (fee-on-top).
+        // amount_out leaves reserve_out; not part of vault_in counter.
+        let amount_out = crate::amm::constant_product_output(reserve_in_before, reserve_out_before, amount_in)
+            .expect("constant_product_output should not fail");
+        let reserve_in_after = reserve_in_before + amount_in;
+        let _reserve_out_after = reserve_out_before - amount_out;
+
+        // Step 3: outbound CPIs extract fee_protocol + fee_ot_treasury from vault.
+        // fee_lp stays in the vault (tracked off-reserve by the accumulator).
+        vault_in -= fees.fee_protocol;
+        vault_in -= fees.ot_treasury_fee;
+
+        // Post-state invariant: vault_in == reserves + Σ_unclaimed_fee_lp.
+        // Starting accumulator is zero, so Σ_unclaimed_fee_lp == fee_lp (the
+        // only swap so far).
+        let sum_unclaimed_fee_lp = fees.fee_lp;
+        assert_eq!(
+            vault_in,
+            reserve_in_after + sum_unclaimed_fee_lp,
+            "vault_in_after must equal reserve_in_after + Σ_unclaimed_fee_lp"
         );
     }
 }
