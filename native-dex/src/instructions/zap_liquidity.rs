@@ -152,15 +152,21 @@ pub(crate) fn zap_liquidity_internal<'info>(
     validate_vault(accounts.vault_a, &pool.vault_a)?;
     validate_vault(accounts.vault_b, &pool.vault_b)?;
 
-    // Layer 9 D29 — snapshot pool's cumulative-fee-per-share BEFORE any state
-    // mutation so the auto-claim / fresh-snapshot init below sees only fees
-    // accrued by historical swaps (not the virtual swap performed inside zap,
-    // which does not touch the per-share accumulator). The fresh-init branch
-    // pins the new position to this value (zero claimable); the existing-
-    // position branch realises pending fees against this snapshot before the
-    // share increment dilutes them.
-    let cumulative_a = pool.cumulative_fees_per_share_a;
-    let cumulative_b = pool.cumulative_fees_per_share_b;
+    // Layer 9 D29+ — LpPosition pinning uses the LIVE (post-bump) cumulative
+    // `pool.cumulative_fees_per_share_<side>`, not a pre-bump snapshot. The
+    // virtual internal swap below bumps the per-share accumulator (consistent
+    // with `swap_internal`); subsequent LpPosition handling reads the bumped
+    // value so:
+    //   - Fresh-init: new LP starts with `fees_claimed_per_share = post-bump`,
+    //     i.e. zero claimable from the bump they themselves just triggered.
+    //   - Existing-position: auto-claim computes the FULL delta (historical +
+    //     this LP's fair share of the zap-internal bump, based on `shares_pre`).
+    //     Snapshot then advances to post-bump so the new shares the depositor
+    //     receives don't retroactively claim against the same bump.
+    // Net effect across all LPs: total outstanding claim from a single
+    // zap-internal bump equals `fee_lp` exactly (sum of `bump_per_share ×
+    // shares_pre` over all LPs present at bump time), matching the physical
+    // `fee_lp` that stays in the RWT-side vault.
 
     // Validate areal_fee_account
     if accounts.areal_fee_account.address().as_ref() != config.areal_fee_destination.as_ref() {
@@ -217,26 +223,35 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     b_is_rwt, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury,
                 )?;
 
-                // Update reserves after internal swap
+                // Update reserves after internal swap. Per docs (Fee
+                // Architecture Step 5), fee_lp stays in the vault on the RWT
+                // side BUT is NOT booked into reserves — it is tracked via
+                // `pool.cumulative_fees_per_share_<rwt_side>` so LPs can claim
+                // their share via `claim_lp_fees`. This makes ZAP-internal
+                // swap symmetric with normal `swap_internal`.
                 if b_is_rwt {
+                    // B is RWT input. RWT side = B → rwt_is_side_a = false.
                     let fees = calculate_fees(swap_b, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     let net = swap_b.checked_sub(total_deducted)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    pool.reserve_b = pool.reserve_b.checked_add(net).ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_add(fees.fee_lp).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    // fee_lp NOT added to reserves (stays in vault, tracked via accumulator).
+                    pool.reserve_b = pool.reserve_b.checked_add(net)
+                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_a = pool.reserve_a.checked_sub(swap_out)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
                 } else {
+                    // A is RWT output. RWT side = A → rwt_is_side_a = true.
                     let gross_out_for_fees = constant_product_output(pool.reserve_b, pool.reserve_a, swap_b)?;
                     let fees = calculate_fees(gross_out_for_fees, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     pool.reserve_b = pool.reserve_b.checked_add(swap_b)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    pool.reserve_a = pool.reserve_a.checked_sub(swap_out)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_sub(fp).ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_sub(fot).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    // Subtract FULL gross_out (fee_lp stays in vault, tracked via accumulator).
+                    pool.reserve_a = pool.reserve_a.checked_sub(gross_out_for_fees)
+                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
                 }
 
                 final_a = amount_a.checked_add(swap_out)
@@ -267,26 +282,33 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     a_is_rwt, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury,
                 )?;
 
-                // Update reserves after internal swap
+                // Update reserves after internal swap. See "Excess B" branch
+                // above for the rationale — fee_lp stays in the RWT-side vault
+                // and is tracked via `cumulative_fees_per_share_<side>` rather
+                // than booked into reserves.
                 if a_is_rwt {
+                    // A is RWT input. RWT side = A → rwt_is_side_a = true.
                     let fees = calculate_fees(swap_a, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     let net = swap_a.checked_sub(total_deducted)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    pool.reserve_a = pool.reserve_a.checked_add(net).ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_add(fees.fee_lp).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    // fee_lp NOT added to reserves (stays in vault, tracked via accumulator).
+                    pool.reserve_a = pool.reserve_a.checked_add(net)
+                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_b = pool.reserve_b.checked_sub(swap_out)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
                 } else {
+                    // B is RWT output. RWT side = B → rwt_is_side_a = false.
                     let gross_out_for_fees = constant_product_output(pool.reserve_a, pool.reserve_b, swap_a)?;
                     let fees = calculate_fees(gross_out_for_fees, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     pool.reserve_a = pool.reserve_a.checked_add(swap_a)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    pool.reserve_b = pool.reserve_b.checked_sub(swap_out)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_sub(fp).ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_sub(fot).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    // Subtract FULL gross_out (fee_lp stays in vault, tracked via accumulator).
+                    pool.reserve_b = pool.reserve_b.checked_sub(gross_out_for_fees)
+                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
                 }
 
                 final_a = amount_a.checked_sub(swap_a)
@@ -395,13 +417,13 @@ pub(crate) fn zap_liquidity_internal<'info>(
         lp.shares = shares;
         lp.last_update_ts = clock.unix_timestamp;
         lp.bump = lp_bump;
-        // Layer 9 D29 — snapshot pool's current cumulative so the new LP
-        // starts with zero claimable. Without this init, a fresh LP joining a
-        // pool with prior swap activity would steal historical fees that
-        // accrued before they joined, breaking
-        // `vault == reserves + Σ(claimable)`.
-        lp.fees_claimed_per_share_a = cumulative_a;
-        lp.fees_claimed_per_share_b = cumulative_b;
+        // Pin to POST-bump cumulative so the new LP's shares get zero claimable
+        // from the zap-internal swap that just bumped the accumulator (they weren't
+        // in the `total_lp_shares` denominator at bump time). Without this, the
+        // new LP would claim `(bump_per_share × new_shares)` of fee_lp that was
+        // distributed only across pre-deposit LPs → unfunded claim.
+        lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
+        lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
     } else {
         let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
         // SECURITY: Verify LpPosition belongs to this provider
@@ -418,19 +440,38 @@ pub(crate) fn zap_liquidity_internal<'info>(
         // over-paying the fresh deposit at the expense of the position's own
         // historical accrual.
         if lp.shares > 0 {
-            let delta_a_q64 = cumulative_a
+            // Use LIVE post-bump cumulative so the auto-claim includes this LP's
+            // fair share of the zap-internal bump (`bump_per_share × shares_pre`,
+            // since `lp.shares` here is pre-increment). Historical fees + new
+            // bump share are paid out atomically. Then snapshot advances to
+            // post-bump so the new shares added below don't retroactively claim
+            // against the same bump.
+            let delta_a_q64 = pool
+                .cumulative_fees_per_share_a
                 .checked_sub(lp.fees_claimed_per_share_a)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
-            let delta_b_q64 = cumulative_b
+            let delta_b_q64 = pool
+                .cumulative_fees_per_share_b
                 .checked_sub(lp.fees_claimed_per_share_b)
                 .ok_or(ProgramError::from(DexError::MathOverflow))?;
             auto_claim_a = compute_claimable(delta_a_q64, lp.shares)?;
             auto_claim_b = compute_claimable(delta_b_q64, lp.shares)?;
-            // Advance the snapshot so a subsequent claim_lp_fees observes
-            // zero delta. Effects-before-CPI; the vault-side transfer below
-            // moves the realised value to the provider ATAs.
-            lp.fees_claimed_per_share_a = cumulative_a;
-            lp.fees_claimed_per_share_b = cumulative_b;
+            // Effects-before-CPI; the vault-side transfer below moves the
+            // realised value to the provider ATAs.
+            lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
+            lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
+        } else {
+            // Defensive: an LpPosition account exists but holds zero shares. In
+            // normal flow `remove_liquidity` closes the account when shares hit
+            // zero (rent returned to provider), so this branch is unreachable.
+            // However, if a future refactor inadvertently breaks the close path,
+            // the stale `lp.fees_claimed_per_share_*` from when the LP last had
+            // shares would let the newly-minted shares retroactively claim all
+            // bumps that occurred during the zero-shares period — draining vault.
+            // Re-pin to live cumulative so the new shares start with zero
+            // claimable, matching the fresh-init semantics.
+            lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
+            lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
         }
 
         lp.shares = lp.shares.checked_add(shares)
@@ -579,13 +620,17 @@ fn internal_swap(
 
 #[cfg(test)]
 mod tests {
-    //! Layer 9 D29 — pure-Rust math + invariant tests for the
-    //! `zap_liquidity` LP-fee snapshot init / auto-claim integration.
-    //! Mirrors the `add_liquidity` test suite — `zap_liquidity_internal`
-    //! reuses the same auto-claim invariant on the existing-position
-    //! branch (the per-share accumulator is not touched by the virtual
-    //! internal swap, so snapshotting `pool.cumulative_fees_per_share_*`
-    //! BEFORE the LpPosition mutation captures only historical swap fees).
+    //! Layer 9 D29+ — pure-Rust math + invariant tests for the
+    //! `zap_liquidity` LP-fee accumulator integration.
+    //! The virtual internal swap bumps the per-share accumulator
+    //! (consistent with normal `swap_internal`). LpPosition `fees_claimed_per_share`
+    //! is pinned to the POST-bump cumulative so:
+    //!   - Fresh-init: new LP has zero claimable from the bump they triggered.
+    //!   - Existing-position: auto-claim absorbs the LP's fair share of the
+    //!     zap-internal bump (`bump_per_share × shares_pre`), then snapshot
+    //!     advances so new shares don't retroactively claim against the
+    //!     same bump.
+    //! Net invariant: Σ_outstanding_claim_from_one_zap_bump == fee_lp.
     use super::*;
     use crate::state::{LpPosition, PoolState};
 
@@ -612,10 +657,12 @@ mod tests {
         lp
     }
 
-    /// D29 — `zap_liquidity` existing-position branch must auto-claim
-    /// pending fees BEFORE incrementing shares. Same invariant as
-    /// add_liquidity but for the zap path; pinned here so a refactor of
-    /// either handler in isolation cannot regress the symmetric behaviour.
+    /// D29+ — `zap_liquidity` existing-position branch must auto-claim
+    /// pending fees against the LIVE post-bump cumulative BEFORE
+    /// incrementing shares. This ensures the LP receives their fair share
+    /// of any zap-internal bump (based on shares_pre) AND of historical
+    /// fees, while preventing the new shares from retroactively claiming
+    /// against the same bump.
     #[test]
     fn zap_liquidity_existing_position_auto_claims_before_increment() {
         // Pool has cumulative_b from prior swaps (RWT on side B example);
@@ -661,5 +708,323 @@ mod tests {
             .unwrap();
         assert_eq!(compute_claimable(delta_a2, lp.shares).unwrap(), 0u64);
         assert_eq!(compute_claimable(delta_b2, lp.shares).unwrap(), 0u64);
+    }
+
+    /// D29 — ZAP-internal swap on the RWT-input side must bump
+    /// `cumulative_fees_per_share_<rwt_side>` by the canonical Q64.64 delta:
+    /// `(fee_lp << 64) / total_lp_shares`. Non-RWT side stays zero.
+    /// This pins the new behaviour where ZAP-internal swap bumps the
+    /// per-share accumulator (consistent with normal `swap_internal`).
+    #[test]
+    fn zap_internal_swap_bumps_accumulator_on_rwt_input_side() {
+        // Scenario: RWT is side B (input). Pool has 1M total shares.
+        let mut pool = make_pool(0, 0, 1_000_000);
+        let fee_lp = 50_000u64;
+
+        // Simulate ZAP-internal swap where RWT (side B) is the input.
+        // RWT is side B ⇒ rwt_is_side_a = false.
+        crate::instructions::swap::accrue_lp_fee_per_share(&mut pool, fee_lp, false)
+            .expect("accrue_lp_fee_per_share should not fail");
+
+        // Copy fields to locals to work around packed struct alignment issues.
+        let cumulative_a = pool.cumulative_fees_per_share_a;
+        let cumulative_b = pool.cumulative_fees_per_share_b;
+
+        // Side A (non-RWT) unchanged.
+        assert_eq!(cumulative_a, 0u128);
+
+        // Side B (RWT) gains delta_per_share = (50_000 << 64) / 1_000_000.
+        let expected_b = ((fee_lp as u128) << 64) / 1_000_000u128;
+        assert_eq!(cumulative_b, expected_b);
+
+        // Verify the math: a hypothetical LP with 100_000 shares and
+        // zero snapshot would claim (expected_b * 100_000) >> 64 tokens.
+        // Due to Q64.64 truncation, the claimed amount loses the fractional dust.
+        let shares: u128 = 100_000;
+        let claimable_b = compute_claimable(cumulative_b, shares)
+            .expect("compute_claimable should not fail");
+        // (50_000 << 64) / 1_000_000 * 100_000 >> 64 ≈ 4_999 (dust lost).
+        assert_eq!(claimable_b, 4_999u64);
+    }
+
+    /// D29 — ZAP-internal swap on the RWT-output side (symmetric coverage).
+    /// When RWT is side A (output), the A-side accumulator bumps and B stays zero.
+    #[test]
+    fn zap_internal_swap_bumps_accumulator_on_rwt_output_side() {
+        // Scenario: RWT is side A (output). Pool has 2M total shares.
+        let mut pool = make_pool(0, 0, 2_000_000);
+        let fee_lp = 75_000u64;
+
+        // Simulate ZAP-internal swap where RWT (side A) is the output.
+        // RWT is side A ⇒ rwt_is_side_a = true.
+        crate::instructions::swap::accrue_lp_fee_per_share(&mut pool, fee_lp, true)
+            .expect("accrue_lp_fee_per_share should not fail");
+
+        // Copy fields to locals to work around packed struct alignment issues.
+        let cumulative_a = pool.cumulative_fees_per_share_a;
+        let cumulative_b = pool.cumulative_fees_per_share_b;
+
+        // Side B (non-RWT) unchanged.
+        assert_eq!(cumulative_b, 0u128);
+
+        // Side A (RWT) gains delta_per_share = (75_000 << 64) / 2_000_000.
+        let expected_a = ((fee_lp as u128) << 64) / 2_000_000u128;
+        assert_eq!(cumulative_a, expected_a);
+
+        // Verify the math: a hypothetical LP with 200_000 shares and
+        // zero snapshot would claim (expected_a * 200_000) >> 64 tokens.
+        // Due to Q64.64 truncation, the claimed amount loses the fractional dust.
+        let shares: u128 = 200_000;
+        let claimable_a = compute_claimable(cumulative_a, shares)
+            .expect("compute_claimable should not fail");
+        // (75_000 << 64) / 2_000_000 * 200_000 >> 64 ≈ 7_499 (dust lost).
+        assert_eq!(claimable_a, 7_499u64);
+    }
+
+    /// D29 — ZAP-internal swap with empty pool (total_lp_shares == 0) must
+    /// not panic or divide by zero. The guard inside `accrue_lp_fee_per_share`
+    /// ensures a no-op: both accumulators stay zero. While this scenario
+    /// should not occur in practice (ZAP requires a non-empty pool), the
+    /// defensive guard must be pinned to prevent future regressions.
+    #[test]
+    fn zap_internal_swap_with_zero_total_shares_is_noop() {
+        // Pool with no LPs yet.
+        let mut pool = make_pool(0, 0, 0);
+        let fee_lp = 100_000u64;
+
+        // Call accrue on both sides. Should be safe (no panic, no error).
+        crate::instructions::swap::accrue_lp_fee_per_share(&mut pool, fee_lp, true)
+            .expect("accrue_lp_fee_per_share should handle zero shares gracefully");
+        crate::instructions::swap::accrue_lp_fee_per_share(&mut pool, fee_lp, false)
+            .expect("accrue_lp_fee_per_share should handle zero shares gracefully");
+
+        // Copy fields to locals to work around packed struct alignment issues.
+        let cumulative_a = pool.cumulative_fees_per_share_a;
+        let cumulative_b = pool.cumulative_fees_per_share_b;
+
+        // Both accumulators remain zero (no-op when total_lp_shares == 0).
+        assert_eq!(cumulative_a, 0u128);
+        assert_eq!(cumulative_b, 0u128);
+    }
+
+    /// D29+ — `zap_liquidity` fresh-init branch must pin to POST-bump cumulative.
+    /// A new LP entering via ZAP should have `fees_claimed_per_share_<side>` equal
+    /// to the pool's cumulative AFTER the ZAP-internal swap has bumped the
+    /// accumulator. This ensures the new LP has zero claimable from the
+    /// zap-internal bump that just happened (they weren't counted in the
+    /// `total_lp_shares` denominator when the bump was computed).
+    ///
+    /// Invariant pinned by this test: Σ_outstanding_claim == fee_lp for any
+    /// single bump. Without post-bump pinning, a fresh LP would retroactively
+    /// claim `(bump_per_share × new_shares)` from a bump that was only
+    /// distributed across pre-deposit LPs → unfunded claim.
+    #[test]
+    fn zap_fresh_init_starts_at_post_bump_cumulative() {
+        // Pre-bump state: 1 existing LP cohort with 100 shares, no fees yet.
+        let mut pool = make_pool(0, 0, 100);
+
+        // Simulate ZAP-internal swap: RWT on side B (input), fee_lp = 100.
+        // This bumps cumulative_b by (100 << 64) / 100 = 1 << 64.
+        let fee_lp = 100u64;
+        crate::instructions::swap::accrue_lp_fee_per_share(&mut pool, fee_lp, false)
+            .expect("accrue_lp_fee_per_share should not fail");
+
+        // Copy fields to locals to work around packed struct alignment issues.
+        let cumulative_a_post_bump = pool.cumulative_fees_per_share_a;
+        let cumulative_b_post_bump = pool.cumulative_fees_per_share_b;
+
+        // Verify the bump occurred on side B only.
+        assert_eq!(cumulative_a_post_bump, 0u128, "non-RWT side should stay zero");
+        let expected_b = 1u128 << 64; // (100 << 64) / 100 = 1 << 64
+        assert_eq!(cumulative_b_post_bump, expected_b, "RWT side should have bumped");
+
+        // Simulate fresh-init pinning: new LP's snapshot gets POST-bump cumulative.
+        let new_lp = make_position(50, cumulative_a_post_bump, cumulative_b_post_bump);
+
+        // Assert invariant: new LP has zero claimable from the bump.
+        // delta_b = cumulative_b_post_bump - fees_claimed_b = 0
+        let delta_a = cumulative_a_post_bump
+            .checked_sub(new_lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b = cumulative_b_post_bump
+            .checked_sub(new_lp.fees_claimed_per_share_b)
+            .unwrap();
+        let claimable_a = compute_claimable(delta_a, new_lp.shares).expect("compute_claimable");
+        let claimable_b = compute_claimable(delta_b, new_lp.shares).expect("compute_claimable");
+
+        assert_eq!(claimable_a, 0u64, "fresh LP should have zero claimable on side A");
+        assert_eq!(claimable_b, 0u64, "fresh LP should have zero claimable on side B (post-bump pinning)");
+
+        // Invariant check: sum of claimable across all LPs for this bump
+        // should equal fee_lp. Pre-deposit LP with 100 shares at zero snapshot
+        // would claim: (expected_b * 100) >> 64 = (1 << 64) * 100 >> 64 = 100.
+        // New LP claims 0. Total = 100 = fee_lp. ✓
+        let predeposit_lp = make_position(100, 0, 0);
+        let predeposit_delta_b = cumulative_b_post_bump
+            .checked_sub(predeposit_lp.fees_claimed_per_share_b)
+            .unwrap();
+        let predeposit_claimable = compute_claimable(predeposit_delta_b, predeposit_lp.shares)
+            .expect("compute_claimable");
+        assert_eq!(
+            predeposit_claimable + claimable_b, fee_lp as u64,
+            "total outstanding claim from bump should equal fee_lp"
+        );
+    }
+
+    /// D29+ — `zap_liquidity` existing-position branch auto-claims full share
+    /// of the zap-internal bump based on shares_pre, then advances snapshot to
+    /// post-bump so new shares don't retroactively claim the same bump.
+    ///
+    /// This test exercises the invariant: a single zap-internal bump creates
+    /// `fee_lp` total claim across all LPs present at bump time, split by
+    /// `(bump_per_share × shares_pre)` per LP. After snapshot advance, new
+    /// shares from the same depositor have zero delta against the post-bump
+    /// cumulative, preventing double-claim.
+    #[test]
+    fn zap_existing_position_auto_claims_full_share_then_advances_to_post_bump() {
+        // Pre-state: existing LP with 100 shares, fee snapshot at zero.
+        // Pool total shares = 100, cumulative_b = 0 (no fees yet).
+        let mut pool = make_pool(0, 0, 100);
+        let mut lp = make_position(100, 0, 0);
+        let shares_pre = lp.shares;
+
+        // Simulate ZAP-internal swap: RWT on side B, fee_lp = 100.
+        // Bump: cumulative_b = (100 << 64) / 100 = 1 << 64.
+        let fee_lp = 100u64;
+        crate::instructions::swap::accrue_lp_fee_per_share(&mut pool, fee_lp, false)
+            .expect("accrue_lp_fee_per_share should not fail");
+
+        // Copy fields to locals to work around packed struct alignment issues.
+        let cumulative_a_post_bump = pool.cumulative_fees_per_share_a;
+        let cumulative_b_post_bump = pool.cumulative_fees_per_share_b;
+
+        // Simulate existing-position auto-claim: compute pending fees against
+        // LIVE post-bump cumulative before incrementing shares.
+        let delta_a = cumulative_a_post_bump
+            .checked_sub(lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b = cumulative_b_post_bump
+            .checked_sub(lp.fees_claimed_per_share_b)
+            .unwrap();
+        let auto_claim_a = compute_claimable(delta_a, shares_pre).expect("compute_claimable");
+        let auto_claim_b = compute_claimable(delta_b, shares_pre).expect("compute_claimable");
+
+        // Verify auto-claim includes the LP's full fair share of the bump.
+        // delta_b = 1 << 64, shares_pre = 100
+        // claimable = (1 << 64) * 100 >> 64 = 100
+        assert_eq!(auto_claim_a, 0u64, "side A should have zero fees (no bump)");
+        assert_eq!(
+            auto_claim_b, 100u64,
+            "side B auto-claim should be full fair share of bump"
+        );
+
+        // Simulate snapshot advance BEFORE share increment.
+        lp.fees_claimed_per_share_a = cumulative_a_post_bump;
+        lp.fees_claimed_per_share_b = cumulative_b_post_bump;
+
+        // Simulate share increment: add 50 new shares.
+        let new_shares = 50u128;
+        lp.shares = lp.shares.checked_add(new_shares).unwrap();
+        let shares_after_increment = lp.shares;
+        assert_eq!(shares_after_increment, 150u128, "post-increment share count");
+
+        // Verify invariant: after snapshot advance, new shares have zero delta
+        // against the post-bump cumulative. This prevents them from
+        // retroactively claiming against the same bump.
+        let delta_a_after = cumulative_a_post_bump
+            .checked_sub(lp.fees_claimed_per_share_a)
+            .unwrap();
+        let delta_b_after = cumulative_b_post_bump
+            .checked_sub(lp.fees_claimed_per_share_b)
+            .unwrap();
+        let claimable_a_after = compute_claimable(delta_a_after, lp.shares).expect("compute_claimable");
+        let claimable_b_after = compute_claimable(delta_b_after, lp.shares).expect("compute_claimable");
+
+        assert_eq!(
+            claimable_a_after, 0u64,
+            "post-advance delta on side A should be zero"
+        );
+        assert_eq!(
+            claimable_b_after, 0u64,
+            "post-advance delta on side B should be zero (no retroactive claim)"
+        );
+
+        // Final invariant check: total claim from this single bump equals fee_lp.
+        // The existing LP's auto_claim_b (100) + any future claim (0) = 100 = fee_lp.
+        // New LP (if any) starting from post-bump cumulative would also have zero claimable.
+        assert_eq!(
+            auto_claim_b, fee_lp as u64,
+            "total outstanding claim from bump must equal fee_lp"
+        );
+    }
+
+    /// D29+ defensive — existing LpPosition with `shares == 0` must re-pin
+    /// `fees_claimed_per_share_<side>` to the LIVE pool cumulative on next
+    /// add/zap, NOT preserve the stale snapshot from when the LP last held
+    /// shares. Otherwise, when the LP redeposits, the newly minted shares
+    /// would retroactively claim all bumps that occurred during the
+    /// zero-shares interval (drain).
+    ///
+    /// In normal flow `remove_liquidity` closes the LpPosition account when
+    /// shares hit zero, so this branch is theoretically unreachable. This
+    /// test pins the defensive `else` branch behavior to prevent regression
+    /// if a future refactor breaks the close path.
+    #[test]
+    fn zap_existing_position_with_zero_shares_repins_to_current_cumulative() {
+        // Pool has accumulated 100·2^64 in cumulative_b over time (from many
+        // prior swaps). Side A had no fee activity for simplicity.
+        let pool = make_pool(0, 100u128 << 64, 1_000_000);
+
+        // Skeleton LpPosition: LP previously had shares, claimed at the time
+        // when cumulative_b = 50·2^64, then fully removed. Account persists
+        // (theoretical edge case; normal flow closes it).
+        let mut lp = make_position(0, 0, 50u128 << 64);
+
+        // Simulate the defensive `else` branch from zap_liquidity_internal:
+        // when lp.shares == 0 on the existing-position path, re-pin
+        // fees_claimed_per_share_<side> to the LIVE cumulative.
+        if lp.shares == 0 {
+            lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
+            lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
+        }
+
+        // Now simulate the share increment.
+        let new_shares: u128 = 100_000;
+        lp.shares = lp.shares.checked_add(new_shares).unwrap();
+
+        // Copy fields to locals to avoid packed-struct alignment issues.
+        let lp_fees_claimed_b = lp.fees_claimed_per_share_b;
+        let pool_cumulative_b = pool.cumulative_fees_per_share_b;
+
+        // Re-pin worked: fees_claimed advanced to live cumulative (100·2^64),
+        // not left at the stale 50·2^64.
+        assert_eq!(
+            lp_fees_claimed_b, 100u128 << 64,
+            "fees_claimed_per_share_b should be re-pinned to live cumulative"
+        );
+
+        // Future claim attempt observes zero delta → zero claimable.
+        let delta_b = pool_cumulative_b
+            .checked_sub(lp_fees_claimed_b)
+            .unwrap();
+        assert_eq!(delta_b, 0u128, "delta should be zero after re-pin");
+        let claimable_b = compute_claimable(delta_b, lp.shares).expect("compute_claimable");
+        assert_eq!(
+            claimable_b, 0u64,
+            "no claimable fees after defensive re-pin"
+        );
+
+        // For comparison — the broken behavior we prevent: if defensive re-pin
+        // were absent, `lp.fees_claimed_per_share_b` would remain `50 << 64`.
+        // Then `delta = 50 << 64`, `claimable = (50 << 64 × 100_000) >> 64
+        // = 5_000_000` tokens — funds the LP did NOT earn (those bumps were
+        // distributed over OTHER LPs during the zero-shares period).
+        let broken_delta_b: u128 = 50u128 << 64;
+        let broken_claimable_b = compute_claimable(broken_delta_b, lp.shares)
+            .expect("compute_claimable");
+        assert_eq!(
+            broken_claimable_b, 5_000_000u64,
+            "broken path (no re-pin) would have drained 5M tokens"
+        );
     }
 }

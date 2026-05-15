@@ -405,6 +405,17 @@ pub(crate) fn add_liquidity_internal<'info>(
             // moves the realised value to the provider ATAs.
             lp.fees_claimed_per_share_a = cumulative_a;
             lp.fees_claimed_per_share_b = cumulative_b;
+        } else {
+            // Defensive: an LpPosition account exists but holds zero shares. In
+            // normal flow `remove_liquidity` closes the account when shares hit
+            // zero, so this branch is unreachable. However, if a future refactor
+            // breaks the close path, the stale `lp.fees_claimed_per_share_*`
+            // from when the LP last had shares would let the newly-minted shares
+            // retroactively claim all bumps that occurred during the zero-shares
+            // period — draining vault. Re-pin to the current cumulative so the
+            // new shares start with zero claimable, matching fresh-init semantics.
+            lp.fees_claimed_per_share_a = cumulative_a;
+            lp.fees_claimed_per_share_b = cumulative_b;
         }
 
         lp.shares = lp.shares.checked_add(shares)
