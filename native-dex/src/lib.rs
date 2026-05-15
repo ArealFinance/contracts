@@ -71,6 +71,7 @@ use instructions::remove_liquidity::RemoveLiquidity;
 use instructions::swap::Swap;
 use instructions::shift_liquidity::ShiftLiquidity;
 use instructions::update_dex_config::UpdateDexConfig;
+use instructions::update_areal_fee_destination::UpdateArealFeeDestination;
 use instructions::update_pool_creators::UpdatePoolCreators;
 use instructions::pause::{PausePool, UnpausePool};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
@@ -167,6 +168,17 @@ pub mod native_dex {
         is_active: bool,
     ) -> Result<()> {
         crate::instructions::update_dex_config::handler(ctx, base_fee_bps, lp_fee_share_bps, rebalancer, is_active)
+    }
+
+    /// Rotate `DexConfig.areal_fee_destination` to a new RWT ATA. Authority only.
+    /// Validates on-chain that the new destination's mint == `RWT_MINT` so
+    /// misconfiguration cannot brick `swap` / `zap_liquidity` (P0-2 follow-up).
+    /// Idempotent — passing the current destination is a no-op (no event).
+    #[inline(never)]
+    pub fn update_areal_fee_destination(
+        ctx: Context<UpdateArealFeeDestination>,
+    ) -> Result<()> {
+        crate::instructions::update_areal_fee_destination::handler(ctx)
     }
 
     /// Add or remove a pool creator from the whitelist. Authority only.

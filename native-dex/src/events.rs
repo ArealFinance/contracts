@@ -79,6 +79,19 @@ pub struct DexConfigUpdated {
     pub timestamp: i64,
 }
 
+/// Emitted by `update_areal_fee_destination` when the authority rotates
+/// `DexConfig.areal_fee_destination` to a new RWT ATA. Captures both the
+/// previous and new destinations for off-chain audit trails. The
+/// instruction is idempotent: when called with the current destination,
+/// state is left unchanged and this event is NOT emitted.
+/// Body layout: 32 + 32 + 8 = 72 bytes.
+#[event]
+pub struct ArealFeeDestinationUpdated {
+    pub old_destination: [u8; 32],
+    pub new_destination: [u8; 32],
+    pub timestamp: i64,
+}
+
 #[event]
 pub struct AuthorityTransferProposed {
     pub current_authority: [u8; 32],
