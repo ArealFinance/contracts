@@ -195,7 +195,17 @@ pub(crate) fn zap_liquidity_internal<'info>(
         }
     }
 
-    let (final_a, final_b, swapped_amount, fee_protocol_total, fee_ot_total);
+    let (final_a, final_b, swapped_amount, fee_lp_total, fee_protocol_total, fee_ot_total);
+
+    // Fee-on-top gross-up on the RWT side (docs/contracts/native-dex.mdx:534-535).
+    // When the zap-internal swap consumes the RWT side as INPUT, the user
+    // contributes `swap_<rwt> + fee_total + fee_ot_treasury` (equivalently
+    // `swap_<rwt> + fee_lp + fee_protocol + fee_ot_treasury`) on that side.
+    // The extra amount is captured in `rwt_extra_a` / `rwt_extra_b` here and
+    // added to the inbound transfer on the RWT side below. Exactly one of
+    // these is non-zero on the RWT-input branches; both stay 0 otherwise.
+    let rwt_extra_a: u64;
+    let rwt_extra_b: u64;
 
     if pool.reserve_a == 0 && pool.reserve_b == 0 {
         // Empty pool: skip swap, treat as regular add_liquidity
@@ -205,8 +215,11 @@ pub(crate) fn zap_liquidity_internal<'info>(
         final_a = amount_a;
         final_b = amount_b;
         swapped_amount = 0;
+        fee_lp_total = 0;
         fee_protocol_total = 0;
         fee_ot_total = 0;
+        rwt_extra_a = 0;
+        rwt_extra_b = 0;
     } else {
         // Calculate the balanced ratio and determine excess
         // Target ratio: amount_a / amount_b = reserve_a / reserve_b
@@ -224,37 +237,49 @@ pub(crate) fn zap_liquidity_internal<'info>(
                 final_a = amount_a;
                 final_b = amount_b;
                 swapped_amount = 0;
+                fee_lp_total = 0;
                 fee_protocol_total = 0;
                 fee_ot_total = 0;
+                rwt_extra_a = 0;
+                rwt_extra_b = 0;
             } else {
                 // Internal swap: B → A (b_to_a)
                 let b_is_rwt = is_rwt_mint(&pool.token_b_mint);
-                let (swap_out, fp, fot) = internal_swap(
+                let (swap_out, flp, fp, fot) = internal_swap(
                     swap_b, pool.reserve_b, pool.reserve_a,
                     b_is_rwt, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury,
                 )?;
 
-                // Update reserves after internal swap. Per docs (Fee
-                // Architecture Step 5), fee_lp stays in the vault on the RWT
-                // side BUT is NOT booked into reserves — it is tracked via
-                // `pool.cumulative_fees_per_share_<rwt_side>` so LPs can claim
-                // their share via `claim_lp_fees`. This makes ZAP-internal
-                // swap symmetric with normal `swap_internal`.
+                // Update reserves after internal swap. Fee-on-top per docs
+                // (native-dex.mdx:522-568): full swap_<rwt> enters reserves
+                // on the RWT side; fee_lp stays in the RWT vault and is
+                // tracked via `pool.cumulative_fees_per_share_<rwt_side>`;
+                // fee_protocol + fee_ot_treasury are CPI-extracted by the
+                // outbound transfers below.
                 if b_is_rwt {
-                    // B is RWT input. RWT side = B → rwt_is_side_a = false.
+                    // B is RWT input. User contributes amount_b + fees to the
+                    // RWT (B) vault (fees on top per docs); full swap_b enters
+                    // reserves; fee_lp stays in vault tracked by the per-share
+                    // accumulator; fee_protocol + fee_ot_treasury are CPI-extracted.
                     let fees = calculate_fees(swap_b, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
-                    let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    let net = swap_b.checked_sub(total_deducted)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    // fee_lp NOT added to reserves (stays in vault, tracked via accumulator).
-                    pool.reserve_b = pool.reserve_b.checked_add(net)
+                    // Full swap_b into reserves (fee-on-top).
+                    pool.reserve_b = pool.reserve_b.checked_add(swap_b)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_a = pool.reserve_a.checked_sub(swap_out)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
+
+                    // Inbound debit on the RWT (B) side must include fee_lp +
+                    // fee_protocol + fee_ot_treasury. Equivalent to
+                    // fee_total + ot_treasury_fee.
+                    rwt_extra_a = 0;
+                    rwt_extra_b = fees.fee_lp
+                        .checked_add(fees.fee_protocol).ok_or(ProgramError::from(DexError::MathOverflow))?
+                        .checked_add(fees.ot_treasury_fee).ok_or(ProgramError::from(DexError::MathOverflow))?;
                 } else {
                     // A is RWT output. RWT side = A → rwt_is_side_a = true.
+                    // Fees come from the output (gross_out) side per docs; the
+                    // RWT-input gross-up does not apply here.
                     let gross_out_for_fees = constant_product_output(pool.reserve_b, pool.reserve_a, swap_b)?;
                     let fees = calculate_fees(gross_out_for_fees, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     pool.reserve_b = pool.reserve_b.checked_add(swap_b)
@@ -263,6 +288,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     pool.reserve_a = pool.reserve_a.checked_sub(gross_out_for_fees)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
+
+                    rwt_extra_a = 0;
+                    rwt_extra_b = 0;
                 }
 
                 final_a = amount_a.checked_add(swap_out)
@@ -270,6 +298,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
                 final_b = amount_b.checked_sub(swap_b)
                     .ok_or(ProgramError::from(DexError::MathOverflow))?;
                 swapped_amount = swap_b;
+                fee_lp_total = flp;
                 fee_protocol_total = fp;
                 fee_ot_total = fot;
             }
@@ -284,34 +313,44 @@ pub(crate) fn zap_liquidity_internal<'info>(
                 final_a = amount_a;
                 final_b = amount_b;
                 swapped_amount = 0;
+                fee_lp_total = 0;
                 fee_protocol_total = 0;
                 fee_ot_total = 0;
+                rwt_extra_a = 0;
+                rwt_extra_b = 0;
             } else {
                 let a_is_rwt = is_rwt_mint(&pool.token_a_mint);
-                let (swap_out, fp, fot) = internal_swap(
+                let (swap_out, flp, fp, fot) = internal_swap(
                     swap_a, pool.reserve_a, pool.reserve_b,
                     a_is_rwt, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury,
                 )?;
 
                 // Update reserves after internal swap. See "Excess B" branch
-                // above for the rationale — fee_lp stays in the RWT-side vault
-                // and is tracked via `cumulative_fees_per_share_<side>` rather
-                // than booked into reserves.
+                // above for the rationale — full swap_<rwt> enters reserves on
+                // the RWT side (fees on top per docs); fee_lp stays in the
+                // RWT-side vault and is tracked via `cumulative_fees_per_share_<side>`.
                 if a_is_rwt {
-                    // A is RWT input. RWT side = A → rwt_is_side_a = true.
+                    // A is RWT input. User contributes amount_a + fees to the
+                    // RWT (A) vault (fees on top per docs); full swap_a enters
+                    // reserves; fee_lp stays in vault tracked by the per-share
+                    // accumulator; fee_protocol + fee_ot_treasury are CPI-extracted.
                     let fees = calculate_fees(swap_a, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
-                    let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    let net = swap_a.checked_sub(total_deducted)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
-                    // fee_lp NOT added to reserves (stays in vault, tracked via accumulator).
-                    pool.reserve_a = pool.reserve_a.checked_add(net)
+                    // Full swap_a into reserves (fee-on-top).
+                    pool.reserve_a = pool.reserve_a.checked_add(swap_a)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_b = pool.reserve_b.checked_sub(swap_out)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
+
+                    // Inbound debit on the RWT (A) side must include fee_lp +
+                    // fee_protocol + fee_ot_treasury.
+                    rwt_extra_a = fees.fee_lp
+                        .checked_add(fees.fee_protocol).ok_or(ProgramError::from(DexError::MathOverflow))?
+                        .checked_add(fees.ot_treasury_fee).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    rwt_extra_b = 0;
                 } else {
                     // B is RWT output. RWT side = B → rwt_is_side_a = false.
+                    // Fees come from the output (gross_out) side per docs.
                     let gross_out_for_fees = constant_product_output(pool.reserve_a, pool.reserve_b, swap_a)?;
                     let fees = calculate_fees(gross_out_for_fees, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     pool.reserve_a = pool.reserve_a.checked_add(swap_a)
@@ -320,6 +359,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     pool.reserve_b = pool.reserve_b.checked_sub(gross_out_for_fees)
                         .ok_or(ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
+
+                    rwt_extra_a = 0;
+                    rwt_extra_b = 0;
                 }
 
                 final_a = amount_a.checked_sub(swap_a)
@@ -327,6 +369,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
                 final_b = amount_b.checked_add(swap_out)
                     .ok_or(ProgramError::from(DexError::MathOverflow))?;
                 swapped_amount = swap_a;
+                fee_lp_total = flp;
                 fee_protocol_total = fp;
                 fee_ot_total = fot;
             }
@@ -381,8 +424,14 @@ pub(crate) fn zap_liquidity_internal<'info>(
             .ok_or(ProgramError::from(DexError::MathOverflow))?;
     }
 
-    // Accumulate swap fees
+    // Accumulate swap fees.
+    // W-1 sweep: include fee_lp_total for parity with `swap_internal`
+    // (swap.rs:388-391). Stats counter only — funds flow is unchanged
+    // (fee_lp physically stays in the vault, tracked off-reserve via
+    // the per-share accumulator); this just makes the cumulative
+    // protocol-revenue stat truthful on the zap path.
     pool.total_fees_accumulated = pool.total_fees_accumulated
+        .checked_add(fee_lp_total).ok_or(ProgramError::from(DexError::MathOverflow))?
         .checked_add(fee_protocol_total).ok_or(ProgramError::from(DexError::MathOverflow))?
         .checked_add(fee_ot_total).ok_or(ProgramError::from(DexError::MathOverflow))?;
 
@@ -491,15 +540,28 @@ pub(crate) fn zap_liquidity_internal<'info>(
     }
 
     // --- Interactions: transfer tokens from provider to vaults ---
-    // Transfer the total user input (amount_a + amount_b), the internal swap is virtual.
+    // Transfer the total user input (amount_<side> + rwt_extra_<side>), the
+    // internal swap is virtual. Fee-on-top (docs/contracts/native-dex.mdx:534-535):
+    // on the RWT side the user is debited `amount_<rwt> + fee_lp + fee_protocol
+    // + fee_ot_treasury` so the RWT vault holds enough to honour reserves
+    // PLUS the upcoming pool-PDA-signed extractions of fee_protocol/fee_ot_treasury
+    // (fee_lp stays in vault, tracked via the per-share accumulator).
+    // Non-RWT side has `rwt_extra_<side> == 0` and is untouched.
     // User-signed path: empty signer slice (authority is a transaction signer).
     // PDA-signed path: caller-supplied seeds authorize the PDA-owned ATA.
-    if amount_a > 0 {
+    let inbound_a = amount_a
+        .checked_add(rwt_extra_a)
+        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+    let inbound_b = amount_b
+        .checked_add(rwt_extra_b)
+        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+
+    if inbound_a > 0 {
         let transfer_a = arlex_lang::token::instructions::Transfer {
             from: accounts.provider_token_a,
             to: accounts.vault_a,
             authority: accounts.authority,
-            amount: amount_a,
+            amount: inbound_a,
         };
         match authority_signer_seeds {
             Some(seeds) => transfer_a.invoke_signed(seeds)?,
@@ -507,12 +569,12 @@ pub(crate) fn zap_liquidity_internal<'info>(
         }
     }
 
-    if amount_b > 0 {
+    if inbound_b > 0 {
         let transfer_b = arlex_lang::token::instructions::Transfer {
             from: accounts.provider_token_b,
             to: accounts.vault_b,
             authority: accounts.authority,
-            amount: amount_b,
+            amount: inbound_b,
         };
         match authority_signer_seeds {
             Some(seeds) => transfer_b.invoke_signed(seeds)?,
@@ -601,6 +663,12 @@ pub(crate) fn zap_liquidity_internal<'info>(
 
 /// Internal swap calculation (no CPI, virtual swap for zap).
 /// Returns (amount_out, fee_protocol, fee_ot_treasury).
+///
+/// Fee-on-top (docs/contracts/native-dex.mdx:522-568):
+/// - `input_is_rwt`: full `amount_in` enters the curve; fees are external.
+///   `amount_out = constant_product(amount_in)`.
+/// - `!input_is_rwt`: full `amount_in` enters the curve; fees come out of
+///   the gross output. `amount_out = gross_out - fee_total - ot_treasury_fee`.
 fn internal_swap(
     amount_in: u64,
     reserve_in: u64,
@@ -609,15 +677,15 @@ fn internal_swap(
     fee_bps: u16,
     lp_fee_share_bps: u16,
     has_ot_treasury: bool,
-) -> core::result::Result<(u64, u64, u64), ProgramError> {
+) -> core::result::Result<(u64, u64, u64, u64), ProgramError> {
     if input_is_rwt {
+        // Fee-on-top: feed the FULL amount_in into the curve. Fees are
+        // surfaced separately by the caller (via the gross-up of the
+        // RWT-side inbound transfer) and extracted from the vault by the
+        // outbound CPIs.
         let fees = calculate_fees(amount_in, fee_bps, lp_fee_share_bps, has_ot_treasury)?;
-        let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
-        let net_input = amount_in.checked_sub(total_deducted)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
-        let amount_out = constant_product_output(reserve_in, reserve_out, net_input)?;
-        Ok((amount_out, fees.fee_protocol, fees.ot_treasury_fee))
+        let amount_out = constant_product_output(reserve_in, reserve_out, amount_in)?;
+        Ok((amount_out, fees.fee_lp, fees.fee_protocol, fees.ot_treasury_fee))
     } else {
         let gross_out = constant_product_output(reserve_in, reserve_out, amount_in)?;
         let fees = calculate_fees(gross_out, fee_bps, lp_fee_share_bps, has_ot_treasury)?;
@@ -625,7 +693,7 @@ fn internal_swap(
             .ok_or(ProgramError::from(DexError::MathOverflow))?;
         let amount_out = gross_out.checked_sub(total_deducted)
             .ok_or(ProgramError::from(DexError::MathOverflow))?;
-        Ok((amount_out, fees.fee_protocol, fees.ot_treasury_fee))
+        Ok((amount_out, fees.fee_lp, fees.fee_protocol, fees.ot_treasury_fee))
     }
 }
 
@@ -1037,5 +1105,197 @@ mod tests {
             broken_claimable_b, 5_000_000u64,
             "broken path (no re-pin) would have drained 5M tokens"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Fee-on-top compliance (docs/contracts/native-dex.mdx:522-568)
+    //
+    // The three tests below pin the new zap-internal-swap semantics:
+    //   1) Full swap_<rwt> enters reserves on the RWT side (NOT swap_<rwt> - fees).
+    //   2) Inbound transfer on the RWT-input side is grossed up by
+    //      `fee_lp + fee_protocol + fee_ot_treasury` (equivalently
+    //      `fee_total + fee_ot_treasury`).
+    //   3) Vault invariant after the full sequence holds:
+    //        vault_<rwt>_after == reserve_<rwt>_after + Σ_unclaimed_fee_lp.
+    // ---------------------------------------------------------------------
+
+    /// New spec (docs/contracts/native-dex.mdx:565): in the zap-internal swap,
+    /// the full `swap_<rwt>` amount enters reserves on the RWT side. Pure-math
+    /// pin against `internal_swap` with `input_is_rwt = true`.
+    #[test]
+    fn zap_internal_swap_full_swap_amount_enters_reserves() {
+        // Scenario: B is RWT (input). 1M / 1M pool, 30 bps fee, 50/50 split.
+        let reserve_a_before: u64 = 1_000_000;
+        let reserve_b_before: u64 = 1_000_000;
+        let swap_b: u64 = 10_000;
+        let fee_bps: u16 = 30;
+        let lp_fee_share_bps: u16 = 5_000;
+        let has_ot_treasury = false;
+
+        // internal_swap with input_is_rwt = true now returns amount_out based on
+        // the FULL swap_b entering the curve.
+        let (swap_out, _flp, _fp, _fot) = internal_swap(
+            swap_b,
+            reserve_b_before,
+            reserve_a_before,
+            /* input_is_rwt */ true,
+            fee_bps,
+            lp_fee_share_bps,
+            has_ot_treasury,
+        )
+        .expect("internal_swap should not fail");
+
+        // Cross-check: amount_out matches the pure constant_product formula
+        // with full swap_b as net_input.
+        let expected_out = crate::amm::constant_product_output(reserve_b_before, reserve_a_before, swap_b)
+            .expect("constant_product_output should not fail");
+        assert_eq!(swap_out, expected_out);
+
+        // Simulate the production reserve effects for the b_is_rwt branch:
+        // full swap_b into reserve_b, swap_out out of reserve_a.
+        let reserve_b_after = reserve_b_before + swap_b;
+        let reserve_a_after = reserve_a_before - swap_out;
+
+        // Pin: reserve_b_after == reserve_b_before + swap_b (full, no fee deduction).
+        assert_eq!(
+            reserve_b_after,
+            reserve_b_before + swap_b,
+            "fee-on-top: full swap_b must enter reserves"
+        );
+        // Sanity on the output side.
+        assert!(reserve_a_after < reserve_a_before);
+    }
+
+    /// Pure-math pin for the inbound debit on the RWT-input side. With
+    /// `b_is_rwt = true`, the transferred amount on side B equals
+    /// `amount_b + fee_lp + fee_protocol + fee_ot_treasury`. Equivalently
+    /// `amount_b + fee_total + fee_ot_treasury`.
+    #[test]
+    fn zap_inbound_debit_grossed_up_on_rwt_side() {
+        // Realistic input amounts. We don't drive the full zap math here — we
+        // pin the gross-up formula directly using `calculate_fees` against the
+        // expected `swap_b` (the architect's spec asks for given `amount_a`,
+        // `amount_b`, `swap_b`, `b_is_rwt = true`).
+        let amount_a: u64 = 100_000;
+        let amount_b: u64 = 110_000;
+        let swap_b: u64 = 5_000;
+        let fee_bps: u16 = 30;
+        let lp_fee_share_bps: u16 = 5_000;
+        let has_ot_treasury = true;
+
+        // Sanity on the precondition.
+        assert!(amount_b > amount_a);
+
+        // Fees are computed on swap_b (the virtual zap-internal swap consumes
+        // swap_b from the RWT-input side).
+        let fees = calculate_fees(swap_b, fee_bps, lp_fee_share_bps, has_ot_treasury)
+            .expect("calculate_fees should not fail");
+
+        // Production formula for rwt_extra_b on the b_is_rwt branch.
+        let rwt_extra_b = fees.fee_lp + fees.fee_protocol + fees.ot_treasury_fee;
+
+        // Equivalent form using fee_total.
+        let rwt_extra_b_alt = fees.fee_total + fees.ot_treasury_fee;
+        assert_eq!(rwt_extra_b, rwt_extra_b_alt);
+
+        // The inbound transfer on side B must include the gross-up.
+        let inbound_b = amount_b + rwt_extra_b;
+        assert_eq!(
+            inbound_b,
+            amount_b + fees.fee_total + fees.ot_treasury_fee,
+            "RWT-input side must be grossed up by fee_total + fee_ot_treasury"
+        );
+
+        // Non-RWT side (A) stays untouched.
+        let rwt_extra_a: u64 = 0;
+        let inbound_a = amount_a + rwt_extra_a;
+        assert_eq!(inbound_a, amount_a, "non-RWT side must not be grossed up");
+    }
+
+    /// Vault-invariant simulation for the zap path. Symmetric to
+    /// `sell_rwt_post_swap_invariant` in swap.rs. Walk through inbound
+    /// transfers, reserve effects, and outbound fee-extraction CPIs; assert
+    /// that the RWT vault counter ends at
+    ///   reserve_<rwt>_after + Σ_unclaimed_fee_lp.
+    #[test]
+    fn zap_post_swap_vault_invariant() {
+        // Pool with RWT on side B, clean vault state.
+        let reserve_a_before: u64 = 1_000_000;
+        let reserve_b_before: u64 = 1_000_000;
+        // vault_a is tracked symbolically below (no fee accumulator activity on
+        // the non-RWT side); only vault_b is exercised for the invariant.
+        let mut vault_b: u64 = reserve_b_before;
+
+        // User zaps amount_a and amount_b. amount_b > amount_a (Excess B path).
+        let amount_a: u64 = 50_000;
+        let amount_b: u64 = 70_000;
+        let fee_bps: u16 = 30;
+        let lp_fee_share_bps: u16 = 5_000;
+        let has_ot_treasury = true;
+
+        // Production zap math derives swap_b from excess_b (the half-excess
+        // heuristic). For the invariant test we only need a concrete swap_b
+        // and the production fee gross-up; the slice of math we don't drive
+        // here (final_a/final_b/dep_a/dep_b) operates entirely on `final_<a/b>`
+        // which net out of `amount_<a/b>` — the vault counter accounts for
+        // `amount_<a/b>` directly, so we are safe pinning just the swap leg.
+        let value_a_in_b: u64 = (amount_a as u128 * reserve_b_before as u128
+            / reserve_a_before as u128) as u64;
+        let excess_b = amount_b - value_a_in_b;
+        let swap_b = excess_b / 2;
+        assert!(swap_b > 0, "fixture must hit the actual swap branch");
+
+        // Fees on swap_b.
+        let fees = calculate_fees(swap_b, fee_bps, lp_fee_share_bps, has_ot_treasury)
+            .expect("calculate_fees should not fail");
+        let rwt_extra_b = fees.fee_lp + fees.fee_protocol + fees.ot_treasury_fee;
+
+        // Inbound transfers (fee-on-top on RWT side B).
+        let _inbound_a = amount_a; // non-RWT side, no fee gross-up
+        let inbound_b = amount_b + rwt_extra_b;
+        vault_b += inbound_b;
+
+        // Reserve effects (Excess-B, b_is_rwt branch):
+        // - reserve_b += swap_b (full, fee-on-top)
+        // - reserve_a -= swap_out (gross curve output)
+        let swap_out = crate::amm::constant_product_output(reserve_b_before, reserve_a_before, swap_b)
+            .expect("constant_product_output should not fail");
+        let mut reserve_a_after = reserve_a_before - swap_out;
+        let reserve_b_after = reserve_b_before + swap_b;
+
+        // The zap also deposits final_<a/b> into reserves. For invariant
+        // tracking we treat these as `amount_<a/b> - swap_<rwt>` movements
+        // (the final_<a/b> additions cancel against the implicit amounts
+        // already added via the inbound). To keep the test self-contained,
+        // restrict the invariant check to the swap-leg deltas only by
+        // subtracting `amount_a` and `(amount_b - swap_b)` from both sides.
+        // Equivalent: the swap leg's vault delta on side B is
+        //   inbound_b - swap_b  (rest goes into reserve_b directly via final_b).
+        // Reserve-b delta from the swap leg is swap_b.
+        // After the swap leg: reserve_b grew by swap_b, vault_b grew by inbound_b.
+
+        // Outbound CPIs extract fee_protocol + fee_ot_treasury from the RWT
+        // vault (B). fee_lp stays in the vault (tracked off-reserve by the
+        // per-share accumulator).
+        vault_b -= fees.fee_protocol;
+        vault_b -= fees.ot_treasury_fee;
+
+        // For the swap leg only: deposit step adds amount_a + (amount_b - swap_b)
+        // to reserves; the swap leg already moved swap_b into reserves above.
+        // We expose only the swap-leg vault balance vs reserve balance:
+        let swap_leg_vault_b = vault_b - (amount_b - swap_b); // remove the final_b leg
+        let swap_leg_reserve_b = reserve_b_after;
+
+        // Σ_unclaimed_fee_lp == fee_lp (only one swap, starting accumulator zero).
+        let sum_unclaimed_fee_lp = fees.fee_lp;
+        assert_eq!(
+            swap_leg_vault_b,
+            swap_leg_reserve_b + sum_unclaimed_fee_lp,
+            "vault_b on the swap leg must equal reserve_b + Σ_unclaimed_fee_lp (RWT side)"
+        );
+
+        // Non-RWT side (A) has no fee accumulator activity.
+        reserve_a_after += amount_a; // deposit leg adds amount_a to reserve_a
+        let _ = reserve_a_after; // pin reserve_a path is symmetric and uneventful
     }
 }

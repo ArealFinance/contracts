@@ -97,6 +97,14 @@ impl<'info> NexusSwap<'info> {
     }
 }
 
+/// Fee-on-top compliance (docs/contracts/native-dex.mdx:522-568): when
+/// `input_is_rwt`, the Nexus PDA's `nexus_token_in` ATA must contain
+/// `amount_in + fee_total + ot_treasury_fee` (fees on top per docs spec) so
+/// the inbound transfer initiated by `swap_internal` can debit the full
+/// fee-grossed amount. The bot driving this instruction is responsible for
+/// sizing `amount_in` so that fee headroom is reserved in the Nexus ATA.
+/// When `!input_is_rwt`, fees come out of the output side and the Nexus ATA
+/// only needs `amount_in` to cover the inbound transfer.
 pub fn handler(
     ctx: Context<NexusSwap>,
     amount_in: u64,
