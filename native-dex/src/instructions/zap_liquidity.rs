@@ -168,9 +168,20 @@ pub(crate) fn zap_liquidity_internal<'info>(
     // shares_pre` over all LPs present at bump time), matching the physical
     // `fee_lp` that stays in the RWT-side vault.
 
-    // Validate areal_fee_account
+    // Validate areal_fee_account address matches the immutable
+    // `dex_config.areal_fee_destination` pinned at `initialize_dex` time.
     if accounts.areal_fee_account.address().as_ref() != config.areal_fee_destination.as_ref() {
         return Err(ProgramError::from(DexError::InvalidTokenAccount));
+    }
+    // Per spec (Fee Architecture Step 4: "Always RWT"; Step 2: Protocol Fee
+    // "always in RWT, transferred to areal_fee_destination"), the protocol
+    // fee destination MUST be an RWT ATA. Mirror the same fail-fast revert
+    // used by `swap` so misconfigured clusters surface a typed error rather
+    // than the SPL Token raw `MintMismatch` (0x3) at CPI time. Symmetric with
+    // `swap.rs:200-203`.
+    let areal_dest_mint = read_token_account_mint(accounts.areal_fee_account)?;
+    if areal_dest_mint != RWT_MINT {
+        return Err(ProgramError::from(DexError::InvalidProtocolFeeDestination));
     }
 
     // OT treasury validation

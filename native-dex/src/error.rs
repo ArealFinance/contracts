@@ -62,6 +62,8 @@ pub enum DexError {
     InvalidPauseAuthority,
     #[msg("Fee destination cannot be zero address")]
     InvalidFeeDestination,
+    #[msg("Protocol fee destination mint does not match RWT mint")]
+    InvalidProtocolFeeDestination,
     #[msg("Address cannot be zero")]
     ZeroAddress,
     #[msg("Invalid token account")]
