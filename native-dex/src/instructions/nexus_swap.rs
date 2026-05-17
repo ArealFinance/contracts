@@ -93,6 +93,7 @@ impl<'info> NexusSwap<'info> {
             vault_in: self.vault_in,
             vault_out: self.vault_out,
             areal_fee_account: self.areal_fee_account,
+            token_program: self.token_program,
         }
     }
 }

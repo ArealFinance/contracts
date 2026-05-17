@@ -139,6 +139,48 @@ pub const YD_PROGRAM_ID: [u8; 32] = [
 /// sha256("global:claim")[..8]
 pub const DISC_YD_CLAIM: [u8; 8] = [0x3e, 0xc6, 0xd6, 0xc1, 0xd5, 0x9f, 0x6c, 0xd2];
 
+// ----- CP-6 RWT Engine CPI targets -----
+//
+// Source of truth: contracts/rwt-engine/src/lib.rs `declare_id!(...)`.
+//
+// CP-6 introduces a single new CPI surface — `rwt_engine::mint_rwt` — invoked
+// by `swap` when a master pool's USDC→RWT trade would consume organic ask
+// priced above `NAV × (1 + MINT_ROUTE_PRICE_OFFSET_BPS / BPS_DENOMINATOR)` or
+// when the organic ask is empty. The user is the signer (pass-through), so
+// this is an unsigned `invoke` (NOT `invoke_signed`) — no new authority
+// surface is created on the DEX side.
+
+/// RWT Engine program ID: `RWT9hgbjHQDj98xP7FYsT5QYp5X32XyK6QfMRmFtARL` (vanity).
+/// Mirrored from `contracts/rwt-engine/src/lib.rs::declare_id!`. A parity test
+/// in `cpi.rs::tests` enforces that the bytes match the canonical vanity
+/// address (same pattern as `YD_PROGRAM_ID`).
+pub const RWT_ENGINE_PROGRAM_ID: [u8; 32] = [
+    0x06, 0x47, 0x3d, 0x57, 0x5a, 0xee, 0x84, 0xb9,
+    0x31, 0xd6, 0xc0, 0x90, 0x1e, 0x42, 0xc6, 0xb5,
+    0xf4, 0x57, 0x82, 0x1c, 0x13, 0x68, 0x40, 0xc6,
+    0x49, 0xa1, 0x15, 0xcd, 0x39, 0xdb, 0x48, 0x1f,
+];
+
+/// `rwt_engine::mint_rwt` discriminator: `sha256("global:mint_rwt")[..8]`.
+/// Verified against the canonical SHA-256 by `cpi.rs::tests::disc_rwt_mint_matches_sha256`.
+pub const DISC_RWT_MINT: [u8; 8] = [0x62, 0x20, 0x73, 0xde, 0x44, 0x0c, 0xa1, 0xa2];
+
+/// Byte offset of `RwtVault.nav_book_value` (u64 LE) inside the account's
+/// data buffer, EXCLUDING the 8-byte arlex account discriminator. The actual
+/// on-chain layout starts with the 8-byte discriminator, so the absolute
+/// offset from `data_ptr()` is `RWT_VAULT_DISC_LEN + RWT_VAULT_NAV_OFFSET = 32`.
+///
+/// Layout (from `contracts/rwt-engine/src/state.rs::RwtVault`, `repr(C, packed)`):
+///   offset 0..16   total_invested_capital (u128)
+///   offset 16..24  total_rwt_supply       (u64)
+///   offset 24..32  nav_book_value         (u64)  ← reading here
+///   offset 32..64  capital_accumulator_ata
+///   ...
+pub const RWT_VAULT_NAV_OFFSET: usize = 24;
+
+/// Length of the arlex account discriminator prefix (same as Anchor: 8 bytes).
+pub const RWT_VAULT_DISC_LEN: usize = 8;
+
 // ----- Layer 9 (Liquidity Nexus) -----
 
 /// PDA seed for the singleton `LiquidityNexus` account. One Nexus per DEX

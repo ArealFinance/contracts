@@ -128,4 +128,13 @@ pub enum DexError {
     // ----- CP-5 Monotonic Ladder user-LP guards -----
     #[msg("Master (Monotonic Ladder) pools reject user LP — liquidity enters only via Nexus")]
     MasterPoolUserLpDisabled,
+    // ----- CP-6 Mint-routing swap (rwt_engine::mint_rwt CPI) -----
+    #[msg("user_token_out.mint != RWT_MINT on mint-route swap")]
+    InvalidRwtMint,
+    #[msg("rwt_vault account is missing, has wrong owner, or wrong discriminator")]
+    InvalidRwtVault,
+    #[msg("price_at_bin overflow when computing best-ask threshold")]
+    PriceOverflow,
+    #[msg("Mint-route swap requires 4 remaining_accounts after the bin_array slot")]
+    MissingMintRouteAccounts,
 }

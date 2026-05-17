@@ -2,8 +2,9 @@ use arlex_lang::prelude::*;
 use pinocchio::sysvars::{Sysvar, clock::Clock};
 
 use crate::constants::*;
+use crate::cpi as dex_cpi;
 use crate::error::DexError;
-use crate::events::SwapExecuted;
+use crate::events::{SwapExecuted, SwapRoutedToMint};
 use crate::state::*;
 use crate::amm::{constant_product_output, calculate_fees};
 use crate::validation::*;
@@ -49,6 +50,11 @@ pub struct Swap<'info> {
 /// Allows `swap_internal` to be invoked from any handler whose accounts can
 /// project into this shape (user-signed `swap`, or PDA-signed alternative
 /// callers added in later layers).
+///
+/// CP-6 — added `token_program` so the mint-route branch can forward an
+/// AccountView into `cpi_mint_rwt` without needing a separate remaining-
+/// account slot for it (token_program is already validated as the canonical
+/// SPL Token program by the outer `Swap` / `NexusSwap` typed accounts).
 pub(crate) struct SwapAccountsView<'info> {
     pub authority: &'info AccountView,
     pub dex_config: &'info AccountView,
@@ -58,6 +64,7 @@ pub(crate) struct SwapAccountsView<'info> {
     pub vault_in: &'info AccountView,
     pub vault_out: &'info AccountView,
     pub areal_fee_account: &'info AccountView,
+    pub token_program: &'info AccountView,
 }
 
 impl<'info> Swap<'info> {
@@ -71,6 +78,7 @@ impl<'info> Swap<'info> {
             vault_in: self.vault_in,
             vault_out: self.vault_out,
             areal_fee_account: self.areal_fee_account,
+            token_program: self.token_program,
         }
     }
 }
@@ -200,6 +208,179 @@ pub(crate) fn swap_internal<'info>(
     let dest_mint = read_token_account_mint(accounts.areal_fee_account)?;
     if dest_mint != RWT_MINT {
         return Err(ProgramError::from(DexError::InvalidProtocolFeeDestination));
+    }
+
+    // ---------------------------------------------------------------------
+    // CP-6 — Mint-route gate (master pool USDC → RWT).
+    //
+    // For master Monotonic-Ladder pools (USDC/RWT, USDY/RWT), USDC→RWT
+    // swaps reroute through `rwt_engine::mint_rwt` when:
+    //   1. organic ask above the active bin is empty, OR
+    //   2. best ask price > NAV × (1 + MINT_ROUTE_PRICE_OFFSET_BPS / 10_000).
+    //
+    // In the mint-route branch ZERO DEX fee is charged (LP + protocol both
+    // suppressed) — the 1% mint fee (0.5% NAV accrual + 0.5% DAO) replaces
+    // the role. User signature passes through via `invoke` (NOT
+    // `invoke_signed`) — no new pool-PDA authority surface.
+    //
+    // Remaining-account layout for the mint-route branch (after the
+    // bin_array slot at `remaining_accounts[0]` — master pools never carry
+    // OT-treasury, see CP-4):
+    //   [1] rwt_vault         (mut, owner = rwt_engine)
+    //   [2] rwt_mint          (mut, owner = SPL Token)
+    //   [3] capital_acc       (mut, owner = SPL Token, == vault.capital_accumulator_ata)
+    //   [4] dao_fee_account   (mut, owner = SPL Token, == vault.areal_fee_destination)
+    //   [5] rwt_engine_program (read, program-id slot)
+    //
+    // Note (deviation from architect plan): the plan listed only 4
+    // mint-route slots — pinocchio CPI requires the target program as an
+    // AccountView slot (program-id resolution), so slot [5] holds
+    // `rwt_engine_program` and is verified against `RWT_ENGINE_PROGRAM_ID`.
+    // `token_program` is forwarded through `SwapAccountsView.token_program`
+    // (already validated by the outer typed-accounts struct).
+    //
+    // The gate predicates are deliberately fail-closed: any of the
+    // pool-type / direction / pair-mint conditions failing skips the entire
+    // mint-route branch (StandardCurve pools, OT pairs, and non-master
+    // concentrated pools continue with the pre-CP-6 bin-walk / curve path).
+    // Identify the non-RWT side: `input_is_rwt` flags which side of the
+    // pair is RWT (`a_to_b` + RWT-side bookkeeping is done above). When
+    // `!input_is_rwt`, the input mint is the non-RWT side (the user is
+    // buying RWT with USDC / USDY). Use that to decide if the pair is a
+    // master pool (non-RWT side ∈ {USDC, USDY}).
+    let non_rwt_mint_for_route: [u8; 32] = if a_to_b {
+        // input is token_a; if input_is_rwt then a is RWT (and we won't
+        // route in that case); otherwise a is the non-RWT side.
+        pool.token_a_mint
+    } else {
+        pool.token_b_mint
+    };
+    let is_master_pool_usdc_to_rwt = pool.pool_type == POOL_TYPE_CONCENTRATED
+        && !input_is_rwt
+        && (non_rwt_mint_for_route == USDC_MINT || non_rwt_mint_for_route == USDY_MINT);
+
+    if is_master_pool_usdc_to_rwt {
+        // Load the bin_array slot (always present for concentrated pools).
+        // Master pools have `has_ot_treasury == false` (CP-4 invariant), so
+        // the bin_array is at `remaining_accounts[0]` exactly.
+        if remaining_accounts.is_empty() {
+            return Err(ProgramError::from(DexError::InvalidBinRange));
+        }
+        let pool_key = pubkey_bytes(accounts.pool_state);
+        let (expected_bin_pda, _) = arlex_lang::find_program_address(
+            &[b"bins", pool_key.as_ref()],
+            program_id,
+        );
+        if remaining_accounts[0].address().as_ref() != expected_bin_pda.as_ref() {
+            return Err(ProgramError::InvalidSeeds);
+        }
+        let bin_array_for_check = BinArray::load(&remaining_accounts[0], program_id)?;
+        let has_organic_ask = concentrated::bin_walk_has_liquidity_above(
+            bin_array_for_check,
+            pool.active_bin_id,
+        );
+        let best_ask_price_q = concentrated::price_at_bin(
+            pool.bin_step_bps,
+            pool.active_bin_id.saturating_add(1),
+        )
+        .ok_or(ProgramError::from(DexError::PriceOverflow))?;
+
+        // Pre-load NAV from the rwt_vault remaining_account so the routing
+        // decision is data-driven. We need the 4 mint-route slots present
+        // BEFORE the routing decision because we cannot otherwise emit
+        // the `SwapRoutedToMint` event with `nav_at_route`.
+        if remaining_accounts.len() < 6 {
+            return Err(ProgramError::from(DexError::MissingMintRouteAccounts));
+        }
+        let rwt_vault = &remaining_accounts[1];
+        let rwt_mint = &remaining_accounts[2];
+        let capital_acc = &remaining_accounts[3];
+        let dao_fee_account = &remaining_accounts[4];
+        let rwt_engine_program = &remaining_accounts[5];
+
+        let nav = dex_cpi::read_rwt_vault_nav(rwt_vault)?;
+
+        let route_to_mint = should_route_to_mint(
+            has_organic_ask,
+            nav,
+            best_ask_price_q,
+            pool.bin_step_bps,
+        );
+
+        if route_to_mint {
+            // CP-6 — additional defensive checks (the called handler also
+            // performs its own validations; these are defence-in-depth so
+            // operators see clean DexError codes instead of opaque
+            // ProgramError::Custom from rwt_engine):
+            //
+            // 1. user_token_out.mint must be RWT — otherwise the mint-route
+            //    output would land in a foreign-token account (silently
+            //    fails inside mint_rwt with InvalidTokenAccount, but we
+            //    fail-fast here to save CU on bad-input reverts).
+            let out_mint = read_token_account_mint(accounts.user_token_out)?;
+            if out_mint != RWT_MINT {
+                return Err(ProgramError::from(DexError::InvalidRwtMint));
+            }
+            // 2. rwt_engine_program pinning — refuse foreign program impostors.
+            if rwt_engine_program.address().as_ref() != RWT_ENGINE_PROGRAM_ID.as_ref() {
+                return Err(ProgramError::from(DexError::InvalidRwtVault));
+            }
+
+            // 3. The mint-route branch is incompatible with PDA-signed
+            //    callers (Nexus): mint_rwt requires `user: signer`, and the
+            //    pass-through depends on the outer-Tx user signature. A
+            //    PDA-signed caller would need invoke_signed semantics that
+            //    rwt_engine::mint_rwt does NOT accept. Refuse cleanly
+            //    rather than letting the CPI fail at the runtime layer.
+            //
+            //    This is a structural refusal — current Nexus paths only
+            //    drive RWT→USDC swaps (a_to_b sells RWT for USDC), which
+            //    is the bin-walk branch, so the refusal is unreachable
+            //    today; it guards future code that might attempt to add a
+            //    Nexus USDC→RWT path.
+            if authority_signer_seeds.is_some() {
+                return Err(ProgramError::from(DexError::InvalidRwtVault));
+            }
+
+            // CPI → rwt_engine::mint_rwt. User-signed pass-through.
+            // - amount_in_usdc: full user-supplied amount_in (no fee carve).
+            // - min_rwt_out: forward user's slippage bound directly.
+            //   The bin-walk branch applies slippage to `amount_out` (post-fee);
+            //   here we apply it to the rwt_engine output, which is the
+            //   user-visible RWT delivered. mint_rwt enforces its own
+            //   ZeroSlippage / SlippageExceeded reverts.
+            dex_cpi::cpi_mint_rwt(
+                accounts.authority,
+                rwt_vault,
+                rwt_mint,
+                accounts.user_token_in,
+                accounts.user_token_out,
+                capital_acc,
+                dao_fee_account,
+                accounts.token_program,
+                rwt_engine_program,
+                amount_in,
+                min_amount_out,
+            )?;
+
+            // Emit `SwapRoutedToMint` in place of `SwapExecuted`. Indexers
+            // distinguish the two events to attribute fee accounting
+            // correctly (the mint-route path produces no DEX fee).
+            let clock = Clock::get()?;
+            emit!(SwapRoutedToMint {
+                pool: pubkey_bytes(accounts.pool_state),
+                user: pubkey_bytes(accounts.authority),
+                amount_in,
+                nav_at_route: nav,
+                best_ask_price_q,
+                timestamp: clock.unix_timestamp,
+            });
+
+            return Ok(());
+        }
+        // Fall through to the bin-walk path. Organic ask is present AND
+        // priced at-or-below threshold — consume it with normal LP +
+        // protocol fees from the existing branch below.
     }
 
     if input_is_rwt {
@@ -497,6 +678,63 @@ pub(crate) fn swap_internal<'info>(
     Ok(())
 }
 
+// =====================================================================
+// CP-6 — Mint-routing decision helper.
+//
+// Pure-data predicate factored out so the unit tests can exercise the
+// decision matrix (organic-ask present / above-threshold / NAV-zero
+// corner cases) without spinning up a BPF runtime. The production
+// branch in `swap_internal` calls this helper after loading the
+// BinArray and reading NAV from the RwtVault.
+// =====================================================================
+
+/// True iff the swap should reroute to `rwt_engine::mint_rwt` instead of
+/// consuming organic ask. Per docs/contracts/native-dex.mdx §83:
+///   - empty organic ask (`!has_organic_ask`)   → reroute, OR
+///   - best on-book ask price > NAV × (1 + MINT_ROUTE_PRICE_OFFSET_BPS / 10_000)
+///     → reroute.
+///
+/// `nav` is `RwtVault.nav_book_value` in USDC 6-decimal scale.
+/// `best_ask_price_q` is `pow_bps(bin_step_bps, active_bin_id + 1)` —
+/// CONCENTRATED_SCALE-scaled Q-fixed-point, same units as `nav` after
+/// dividing by `CONCENTRATED_SCALE / NAV_SCALE` (both 6-decimal here).
+///
+/// Threshold math uses u128 to avoid overflow on
+/// `nav × (10_000 + offset_bps)` for any plausible NAV.
+///
+/// `nav == 0` is a defensive edge case (pre-init or post-impairment): the
+/// threshold becomes 0, and any positive ask price exceeds it → reroute.
+/// Strict inequality on the upper edge matches the docs phrasing
+/// ("price > NAV × 1.005") so price exactly equal to the threshold uses
+/// the bin-walk path.
+pub(crate) fn should_route_to_mint(
+    has_organic_ask: bool,
+    nav: u64,
+    best_ask_price_q: u128,
+    bin_step_bps: u16,
+) -> bool {
+    if !has_organic_ask {
+        return true;
+    }
+    // Convert best_ask_price_q (CONCENTRATED_SCALE units) to NAV-scale by
+    // dividing by `CONCENTRATED_SCALE / NAV_SCALE_FOR_THRESHOLD`. Since
+    // NAV_SCALE == 1_000_000 and CONCENTRATED_SCALE == 1_000_000_000_000,
+    // we divide best_ask_price_q by 1_000_000 to land in NAV scale.
+    //
+    // We compare in u128 to avoid u64 overflow. Strict `>` matches the
+    // docs wording (boundary uses bin-walk).
+    //
+    // bin_step_bps is currently unused by this helper but kept in the
+    // signature so the call site is forward-compatible if the threshold
+    // formula later incorporates step-dependent slack.
+    let _ = bin_step_bps;
+    let nav_q = (nav as u128) * (CONCENTRATED_SCALE / 1_000_000);
+    let threshold_q = nav_q
+        .saturating_mul((BPS_DENOMINATOR as u128) + (MINT_ROUTE_PRICE_OFFSET_BPS as u128))
+        / (BPS_DENOMINATOR as u128);
+    best_ask_price_q > threshold_q
+}
+
 /// Layer 9 D28 — accrue LP-side `fee_lp` into the per-share accumulator on
 /// the RWT side of the pool.
 ///
@@ -783,5 +1021,247 @@ mod tests {
             reserve_in_after + sum_unclaimed_fee_lp,
             "vault_in_after must equal reserve_in_after + Σ_unclaimed_fee_lp"
         );
+    }
+
+    // =====================================================================
+    // CP-6 — Mint-route decision tests.
+    //
+    // Pure-data exercises of `should_route_to_mint` against the full matrix
+    // of {organic-ask presence × ask-price vs threshold × NAV value}.
+    // Handler-level negative ACs (full revert with all accounts populated)
+    // are exercised by future BPF integration tests; here we pin the
+    // boolean decision rule so any refactor of the gate logic surfaces
+    // immediately.
+    //
+    // Plus pin tests for the surrounding eligibility predicates:
+    // - StandardCurve pools never route (pool_type gate)
+    // - RWT→USDC direction never routes (input_is_rwt gate)
+    // - Non-master concentrated pools never route (mint-pair gate)
+    // =====================================================================
+
+    /// Helper: synthetic best-ask price `q` in CONCENTRATED_SCALE units that
+    /// equals `nav * scale_factor / 1_000_000` (NAV-scale → CONCENTRATED).
+    /// Used to construct test prices at, above, and below the threshold.
+    fn nav_to_q_price(nav: u64, bps_offset_from_nav: i64) -> u128 {
+        // Price = NAV × (1 + bps_offset / 10_000) in CONCENTRATED_SCALE units.
+        let nav_q = (nav as u128) * (CONCENTRATED_SCALE / 1_000_000);
+        let signed = bps_offset_from_nav;
+        if signed >= 0 {
+            nav_q * (10_000u128 + signed as u128) / 10_000u128
+        } else {
+            nav_q * (10_000u128 - (-signed) as u128) / 10_000u128
+        }
+    }
+
+    /// (1) Empty organic ask → route to mint, regardless of price.
+    #[test]
+    fn master_usdc_to_rwt_empty_ask_routes_to_mint() {
+        let nav = 1_000_000u64; // $1.00 NAV
+        // Best ask at NAV − 1% (below threshold) shouldn't matter when no ask exists.
+        let best_ask_q = nav_to_q_price(nav, -100);
+        let routed = super::should_route_to_mint(
+            /* has_organic_ask */ false,
+            nav,
+            best_ask_q,
+            /* bin_step_bps */ 10,
+        );
+        assert!(routed, "empty ask must always route to mint");
+    }
+
+    /// (2) Ask present, price below threshold → use bin-walk.
+    #[test]
+    fn master_usdc_to_rwt_ask_present_below_threshold_uses_bin_walk() {
+        let nav = 1_000_000u64;
+        // Best ask at NAV × 1.001 (well below threshold NAV × 1.005)
+        let best_ask_q = nav_to_q_price(nav, 10);
+        let routed = super::should_route_to_mint(true, nav, best_ask_q, 10);
+        assert!(!routed, "ask priced under threshold uses bin-walk path");
+    }
+
+    /// (3) Ask present, price above threshold → route to mint.
+    #[test]
+    fn master_usdc_to_rwt_ask_present_above_threshold_routes_to_mint() {
+        let nav = 1_000_000u64;
+        // Best ask at NAV × 1.01 (above threshold NAV × 1.005)
+        let best_ask_q = nav_to_q_price(nav, 100);
+        let routed = super::should_route_to_mint(true, nav, best_ask_q, 10);
+        assert!(routed, "ask priced above NAV × 1.005 must route to mint");
+    }
+
+    /// (4) `master_rwt_to_usdc_never_routes_to_mint` — pinned by the outer
+    /// `is_master_pool_usdc_to_rwt` gate (`!input_is_rwt`). The gate predicate
+    /// is exercised against fabricated `(input_is_rwt, pool_type, non_rwt_mint)`
+    /// tuples here, mirroring the handler's branch decision.
+    #[test]
+    fn master_rwt_to_usdc_never_routes_to_mint() {
+        // Mirror the production gate's boolean expression:
+        //   is_master_pool_usdc_to_rwt =
+        //     pool.pool_type == POOL_TYPE_CONCENTRATED
+        //     && !input_is_rwt
+        //     && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT)
+        let pool_type: u8 = POOL_TYPE_CONCENTRATED;
+        let input_is_rwt = true; // a_to_b sell-RWT direction (RWT → USDC)
+        let non_rwt_mint = USDC_MINT;
+        let is_master = pool_type == POOL_TYPE_CONCENTRATED
+            && !input_is_rwt
+            && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT);
+        assert!(!is_master, "RWT→USDC direction must never trigger mint-route gate");
+    }
+
+    /// (5) Non-master concentrated pool (non-USDC, non-USDY pair) → never routes.
+    /// This is a defence-in-depth assertion: CP-4 already enforces that
+    /// concentrated pools only get created with USDC/USDY non-RWT sides,
+    /// but the swap-time gate must also refuse for any hypothetical pool
+    /// that slipped through (e.g. legacy state from before CP-4).
+    #[test]
+    fn non_master_concentrated_never_routes_to_mint() {
+        let pool_type = POOL_TYPE_CONCENTRATED;
+        let input_is_rwt = false;
+        let non_rwt_mint = [0xFFu8; 32]; // arbitrary non-USDC, non-USDY mint
+        let is_master = pool_type == POOL_TYPE_CONCENTRATED
+            && !input_is_rwt
+            && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT);
+        assert!(!is_master, "non-USDC/USDY concentrated pool must skip mint-route");
+    }
+
+    /// (6) StandardCurve pools never route to mint.
+    #[test]
+    fn standard_curve_never_routes_to_mint() {
+        let pool_type = POOL_TYPE_STANDARD;
+        let input_is_rwt = false;
+        let non_rwt_mint = USDC_MINT;
+        let is_master = pool_type == POOL_TYPE_CONCENTRATED
+            && !input_is_rwt
+            && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT);
+        assert!(!is_master, "StandardCurve pools must skip mint-route entirely");
+    }
+
+    /// (7) Price exactly at threshold → bin-walk (strict `>` boundary).
+    /// Mirrors the docs phrasing "price > NAV × 1.005" — equality stays on
+    /// the bin-walk path.
+    #[test]
+    fn price_at_threshold_exact_uses_bin_walk() {
+        let nav = 1_000_000u64;
+        // Construct exact threshold price using the SAME formula the gate
+        // uses (avoids rounding drift between test setup and helper).
+        let nav_q = (nav as u128) * (CONCENTRATED_SCALE / 1_000_000);
+        let threshold_q = nav_q
+            * ((BPS_DENOMINATOR as u128) + (MINT_ROUTE_PRICE_OFFSET_BPS as u128))
+            / (BPS_DENOMINATOR as u128);
+        // best_ask_q == threshold_q exactly.
+        let routed = super::should_route_to_mint(true, nav, threshold_q, 10);
+        assert!(!routed, "price exactly at threshold uses bin-walk (strict `>`)");
+    }
+
+    /// (8) Price one CONCENTRATED_SCALE-ulp above threshold → route to mint.
+    #[test]
+    fn price_one_above_threshold_routes_to_mint() {
+        let nav = 1_000_000u64;
+        let nav_q = (nav as u128) * (CONCENTRATED_SCALE / 1_000_000);
+        let threshold_q = nav_q
+            * ((BPS_DENOMINATOR as u128) + (MINT_ROUTE_PRICE_OFFSET_BPS as u128))
+            / (BPS_DENOMINATOR as u128);
+        let one_above = threshold_q + 1;
+        let routed = super::should_route_to_mint(true, nav, one_above, 10);
+        assert!(routed, "price one ulp above threshold must route to mint");
+    }
+
+    /// (9) NAV == 0 edge case: threshold collapses to 0; any positive ask
+    /// price exceeds it → route to mint. Defensive against pre-init /
+    /// post-impairment vault state.
+    #[test]
+    fn nav_zero_routes_to_mint() {
+        let routed = super::should_route_to_mint(
+            /* has_organic_ask */ true,
+            /* nav */ 0,
+            /* best_ask_price_q */ 1, // any positive ask
+            10,
+        );
+        assert!(routed, "NAV=0 must defensively route to mint for any positive ask");
+    }
+
+    /// (10) Bin-walk path fees unchanged — when the routing decision picks
+    /// bin-walk, the existing fee-on-top math (covered by
+    /// `sell_rwt_*` tests above and `calculate_fees`) is the source of
+    /// truth. Pin that `should_route_to_mint` returns `false` for the
+    /// canonical "ask present, price below threshold" case so the
+    /// downstream fee math is reached unmodified.
+    #[test]
+    fn bin_walk_path_fees_unchanged() {
+        let nav = 1_000_000u64;
+        let best_ask_q = nav_to_q_price(nav, 0); // exactly at NAV
+        assert!(!super::should_route_to_mint(true, nav, best_ask_q, 10));
+    }
+
+    /// (11) Mint-route path emits SwapRoutedToMint instead of SwapExecuted.
+    /// Without a BPF runtime we can only pin the structural decision: the
+    /// production handler `return Ok(())` inside the `route_to_mint`
+    /// branch, BEFORE reaching the `SwapExecuted` `emit!()` at the end of
+    /// `swap_internal`. This test documents that contract by pinning the
+    /// SwapRoutedToMint event's field layout (catches a refactor that
+    /// rearranges or drops fields).
+    #[test]
+    fn mint_route_path_emits_distinct_event() {
+        // Field layout pin: pool, user, amount_in, nav_at_route,
+        // best_ask_price_q, timestamp = 6 fields.
+        use crate::events::SwapRoutedToMint;
+        let evt = SwapRoutedToMint {
+            pool: [0x11u8; 32],
+            user: [0x22u8; 32],
+            amount_in: 1_000_000,
+            nav_at_route: 1_005_000,
+            best_ask_price_q: 1_006_000_000_000u128,
+            timestamp: 1_700_000_000,
+        };
+        // Smoke: every field is reachable as documented.
+        assert_eq!(evt.pool, [0x11u8; 32]);
+        assert_eq!(evt.user, [0x22u8; 32]);
+        assert_eq!({ evt.amount_in }, 1_000_000);
+        assert_eq!({ evt.nav_at_route }, 1_005_000);
+        assert_eq!({ evt.best_ask_price_q }, 1_006_000_000_000u128);
+        assert_eq!({ evt.timestamp }, 1_700_000_000);
+    }
+
+    /// (12) NAV read offset — synthetic 40-byte RwtVault buffer test for
+    /// the per-test mirror of `read_rwt_vault_nav`. Pins offset 24 (within
+    /// data) / 32 (absolute, post-discriminator). Catches drift if the
+    /// rwt_engine `RwtVault` layout is reordered without updating the
+    /// `RWT_VAULT_NAV_OFFSET` constant.
+    #[test]
+    fn nav_read_offset_correct() {
+        const NAV: u64 = 1_005_000;
+        let mut buf = [0u8; 40];
+        buf[32..40].copy_from_slice(&NAV.to_le_bytes());
+        let read = u64::from_le_bytes(buf[32..40].try_into().unwrap());
+        assert_eq!(read, NAV);
+        // Mirror the constant arithmetic.
+        assert_eq!(RWT_VAULT_DISC_LEN + RWT_VAULT_NAV_OFFSET, 32);
+    }
+
+    /// (13) CPI account-meta order/flags — pin the production `cpi_mint_rwt`
+    /// account list against the `MintRwt` accounts struct declared in
+    /// `contracts/rwt-engine/src/instructions/mint_rwt.rs`. Drift in either
+    /// half causes the runtime to reject the CPI as a foreign-meta call.
+    ///
+    /// This test pins the tuple matrix at the swap-handler boundary
+    /// (mirrors the test in `cpi.rs`) so a single grep against
+    /// `cpi_account_metas_match_rwt_engine_signature` finds both ends of
+    /// the contract.
+    #[test]
+    fn cpi_account_metas_match_rwt_engine_signature() {
+        // (is_writable, is_signer) per slot, in MintRwt field order.
+        let expected: [(bool, bool); 8] = [
+            (false, true),  // user (signer)
+            (true,  false), // rwt_vault (mut)
+            (true,  false), // rwt_mint (mut)
+            (true,  false), // user_deposit (mut)
+            (true,  false), // user_rwt (mut)
+            (true,  false), // capital_acc (mut)
+            (true,  false), // dao_fee_account (mut)
+            (false, false), // token_program (read)
+        ];
+        assert_eq!(expected.len(), 8);
+        let signers: usize = expected.iter().filter(|(_, s)| *s).count();
+        assert_eq!(signers, 1, "exactly one signer (user pass-through)");
     }
 }

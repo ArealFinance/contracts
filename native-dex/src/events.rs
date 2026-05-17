@@ -227,3 +227,32 @@ pub struct LpFeesClaimed {
     pub claimable_b: u64,
     pub timestamp: i64,
 }
+
+// ----- CP-6 Mint-routing swap (Monotonic Ladder) -----
+
+/// Emitted by `swap` IN PLACE OF `SwapExecuted` when a master-pool USDC→RWT
+/// trade reroutes through `rwt_engine::mint_rwt` (organic ask exhausted, or
+/// best on-book ask > `NAV × (1 + MINT_ROUTE_PRICE_OFFSET_BPS / 10_000)`).
+///
+/// In the mint-route branch NO DEX fee (LP or protocol) is charged — the
+/// 1% mint fee inside `rwt_engine::mint_rwt` (split 0.5% to vault NAV
+/// accrual + 0.5% to the Areal DAO) fulfils the fee role. Indexers must
+/// branch on this event vs `SwapExecuted` because the fee accounting and
+/// reserve impact are entirely different.
+///
+/// `nav_at_route` is the `RwtVault.nav_book_value` snapshot at the moment
+/// the routing decision was made (read pre-CPI). `best_ask_price_q` is the
+/// `pow_bps(bin_step_bps, active_bin_id + 1)` Q-fixed-point price scaled by
+/// `CONCENTRATED_SCALE`, recorded so off-chain dashboards can prove why the
+/// routing kicked in.
+///
+/// Body layout: 32 + 32 + 8 + 8 + 16 + 8 = 104 bytes.
+#[event]
+pub struct SwapRoutedToMint {
+    pub pool: [u8; 32],
+    pub user: [u8; 32],
+    pub amount_in: u64,
+    pub nav_at_route: u64,
+    pub best_ask_price_q: u128,
+    pub timestamp: i64,
+}
