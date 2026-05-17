@@ -119,13 +119,23 @@ pub fn handler(
     // USDY_MINT. The Monotonic Ladder geometry / mint routing is defined
     // only for those two pairs.
     //
-    // USDY_MINT is currently the all-zero placeholder
-    // (`constants.rs::USDY_MINT == [0u8; 32]`); pinning lands at mainnet via
-    // a dedicated mint-pinning commit (mirrors the RWT_MINT MAINNET-REPLACE
-    // pattern). Until then USDY pools predictably fail this gate.
+    // Test-validator / dev mode: both USDC_MINT and USDY_MINT can be the
+    // all-zero placeholder pre-mainnet (MAINNET-REPLACE pattern, same as
+    // the RWT_MINT pin gate that R20 migration sidesteps until mainnet).
+    // In that state we cannot validate against unpinned constants — accept
+    // any non-RWT mint. Mainnet pinning activates the strict gate without
+    // any further code changes: as soon as either side is non-zero, the
+    // strict equality check fires on that side.
     let non_rwt_mint = if is_rwt_mint(&mint_a) { &mint_b } else { &mint_a };
-    if non_rwt_mint != &USDC_MINT && non_rwt_mint != &USDY_MINT {
-        return Err(ProgramError::from(DexError::InvalidMintPair));
+    const ZERO_MINT: [u8; 32] = [0; 32];
+    let usdc_pinned = USDC_MINT != ZERO_MINT;
+    let usdy_pinned = USDY_MINT != ZERO_MINT;
+    if usdc_pinned || usdy_pinned {
+        let matches_usdc = usdc_pinned && non_rwt_mint == &USDC_MINT;
+        let matches_usdy = usdy_pinned && non_rwt_mint == &USDY_MINT;
+        if !matches_usdc && !matches_usdy {
+            return Err(ProgramError::from(DexError::InvalidMintPair));
+        }
     }
 
     // CP-4 — Master pools never carry an OT-treasury (docs §229: "OT
@@ -302,20 +312,50 @@ mod tests {
     // Twin helpers — mirror the handler's revert decisions on raw bytes.
     // ----------------------------------------------------------------
 
-    /// Twin of the CP-4 mint-pair gate: given the canonically-ordered pair
-    /// `(mint_a, mint_b)` (with `mint_a < mint_b` and exactly one side
-    /// being `RWT_MINT`, both enforced upstream by
-    /// `require_valid_mint_pair`), require the non-RWT side to be USDC
-    /// or USDY. Returns `Ok(())` or `Err(InvalidMintPair)`.
+    /// Twin of the CP-4 mint-pair gate (post-hotfix): given the
+    /// canonically-ordered pair `(mint_a, mint_b)` with exactly one side
+    /// being `RWT_MINT` (enforced upstream by `require_valid_mint_pair`),
+    /// require the non-RWT side to match a pinned USDC/USDY constant.
+    ///
+    /// The gate is two-tiered to mirror production:
+    ///   - Both `USDC_MINT` and `USDY_MINT` are the all-zero placeholder →
+    ///     accept any non-RWT mint (test-validator / dev mode).
+    ///   - At least one of them is pinned (non-zero bytes) → strict
+    ///     equality against whichever side(s) are pinned.
+    ///
+    /// To exercise both branches in unit tests, the twin takes the USDC /
+    /// USDY constants as explicit arguments rather than reading the module
+    /// statics. Production passes the real constants.
+    fn validate_mint_pair_for_master_pool_with(
+        mint_a: &[u8; 32],
+        mint_b: &[u8; 32],
+        usdc_mint: &[u8; 32],
+        usdy_mint: &[u8; 32],
+    ) -> core::result::Result<(), ProgramError> {
+        let non_rwt_mint = if is_rwt_mint(mint_a) { mint_b } else { mint_a };
+        const ZERO_MINT: [u8; 32] = [0; 32];
+        let usdc_pinned = *usdc_mint != ZERO_MINT;
+        let usdy_pinned = *usdy_mint != ZERO_MINT;
+        if usdc_pinned || usdy_pinned {
+            let matches_usdc = usdc_pinned && non_rwt_mint == usdc_mint;
+            let matches_usdy = usdy_pinned && non_rwt_mint == usdy_mint;
+            if !matches_usdc && !matches_usdy {
+                return Err(ProgramError::from(DexError::InvalidMintPair));
+            }
+        }
+        Ok(())
+    }
+
+    /// Production-call form of the twin: uses the actual `USDC_MINT` /
+    /// `USDY_MINT` constants from `constants.rs`. The placeholder-mode
+    /// happy-path tests use this entry point; the pinned-mode revert tests
+    /// pass synthetic non-zero constants via
+    /// `validate_mint_pair_for_master_pool_with`.
     fn validate_mint_pair_for_master_pool(
         mint_a: &[u8; 32],
         mint_b: &[u8; 32],
     ) -> core::result::Result<(), ProgramError> {
-        let non_rwt_mint = if is_rwt_mint(mint_a) { mint_b } else { mint_a };
-        if non_rwt_mint != &USDC_MINT && non_rwt_mint != &USDY_MINT {
-            return Err(ProgramError::from(DexError::InvalidMintPair));
-        }
-        Ok(())
+        validate_mint_pair_for_master_pool_with(mint_a, mint_b, &USDC_MINT, &USDY_MINT)
     }
 
     /// Twin of the CP-4 permanent-tail-offset gate.
@@ -396,37 +436,147 @@ mod tests {
     // Mint-pair gate (CP-4 docs §225)
     // ----------------------------------------------------------------
 
-    /// Happy path — `(RWT, USDC)` is canonically ordered (RWT_MINT bytes
-    /// happen to be lexicographically smaller than the all-zero USDC_MINT
-    /// placeholder? No — USDC_MINT is `[0u8; 32]`, the smallest pubkey, so
-    /// in canonical order USDC is `mint_a` and RWT is `mint_b`). Either
-    /// way, the twin checks the non-RWT side: USDC → Ok.
+    /// Placeholder-mode happy path — with `USDC_MINT == [0u8; 32]` AND
+    /// `USDY_MINT == [0u8; 32]` (the current pre-mainnet state), the gate
+    /// is fully bypassed. Pairing RWT with `mint_b == [0u8; 32]` is
+    /// "OK" not because the non-RWT side matches a meaningful constant
+    /// (both constants ARE zero), but because the gate is short-circuited
+    /// before any comparison runs. Renamed from `creates_master_pool_with_usdc_pair_ok`
+    /// to make this invariant unambiguous.
     #[test]
-    fn creates_master_pool_with_usdc_pair_ok() {
+    fn accepts_zero_mint_b_in_placeholder_mode() {
+        // Pre-condition: assert we really are in placeholder mode. If a
+        // future mainnet-pinning commit lands USDC_MINT/USDY_MINT bytes,
+        // this test will fail loudly and the suite will be re-tiered.
+        const ZERO_MINT: [u8; 32] = [0; 32];
+        assert_eq!(USDC_MINT, ZERO_MINT, "USDC_MINT must be the placeholder in this build");
+        assert_eq!(USDY_MINT, ZERO_MINT, "USDY_MINT must be the placeholder in this build");
+
         // Canonical order: USDC_MINT (all zeros) < RWT_MINT, so a == USDC.
         let mint_a = USDC_MINT;
         let mint_b = RWT_MINT;
         assert!(validate_mint_pair_for_master_pool(&mint_a, &mint_b).is_ok());
     }
 
-    /// Random non-USDC, non-USDY mint paired with RWT → InvalidMintPair.
-    /// `random_non_usdx_mint()` is `[0xFF; 32]` (larger than RWT_MINT), so
-    /// canonical order puts RWT on side A and the random mint on side B.
+    /// Placeholder-mode happy path — pair an arbitrary random non-RWT
+    /// mint with RWT and confirm acceptance. This is the actual
+    /// test-validator behaviour the bootstrap chain depends on: the dev
+    /// USDC mint is generated fresh by `verify-fresh-deploy.sh` and never
+    /// equals the all-zero constant.
+    ///
+    /// Coverage gap closed: the previous suite only asserted the synthetic
+    /// case `mint_b == USDC_MINT == [0u8; 32]`, which was tautologically
+    /// "OK" — the gate would have failed any other byte pattern. This test
+    /// pins the new bypass behaviour explicitly.
     #[test]
-    fn rejects_non_usdc_non_usdy_pair() {
+    fn accepts_any_non_rwt_when_placeholders_unset() {
+        const ZERO_MINT: [u8; 32] = [0; 32];
+        assert_eq!(USDC_MINT, ZERO_MINT);
+        assert_eq!(USDY_MINT, ZERO_MINT);
+
+        // Random non-RWT mint (`[0xFF; 32]` > RWT_MINT lexicographically →
+        // canonical order is (RWT, random)).
         let mint_a = RWT_MINT;
         let mint_b = random_non_usdx_mint();
-        let err = validate_mint_pair_for_master_pool(&mint_a, &mint_b).unwrap_err();
+        assert!(validate_mint_pair_for_master_pool(&mint_a, &mint_b).is_ok());
+    }
+
+    /// Pinned-mode rejection — exercise the code path that only fires
+    /// post-mainnet pinning, by passing synthetic non-zero USDC/USDY
+    /// constants to the explicit-args twin. With `USDC_MINT = [0x11; 32]`
+    /// and `USDY_MINT = [0x22; 32]`, a `(RWT, [0xFF; 32])` pair must
+    /// revert with `InvalidMintPair`.
+    ///
+    /// Renamed from `rejects_non_usdc_non_usdy_pair` — the previous name
+    /// was tautological in the current build (USDC_MINT == [0u8; 32]
+    /// meant the gate fired on EVERY non-zero non-RWT mint, including
+    /// the legitimate test-validator USDC). The hotfix moves that gate
+    /// behind a pin check, so the test now must explicitly simulate a
+    /// pinned build.
+    #[test]
+    fn rejects_non_usdc_non_usdy_pair_when_pinned() {
+        let synthetic_usdc: [u8; 32] = [0x11; 32];
+        let synthetic_usdy: [u8; 32] = [0x22; 32];
+        let mint_a = RWT_MINT;
+        let mint_b = random_non_usdx_mint();
+        let err = validate_mint_pair_for_master_pool_with(
+            &mint_a,
+            &mint_b,
+            &synthetic_usdc,
+            &synthetic_usdy,
+        )
+        .unwrap_err();
         assert_eq!(custom_code(err), code_of(DexError::InvalidMintPair));
     }
 
-    /// USDY happy-path test is intentionally a deferred scenario: with
-    /// `USDY_MINT == [0u8; 32]` (constants.rs:78) it is byte-equal to the
-    /// current `USDC_MINT == [0u8; 32]` placeholder, so even if the
-    /// production gate accepted USDY, the test would be indistinguishable
-    /// from the USDC happy-path. The real USDY happy-path test lands when
-    /// USDY_MINT is pinned at mainnet (mirror of the RWT_MINT
-    /// MAINNET-REPLACE pattern).
+    /// Pinned-mode happy path — with both USDC and USDY pinned, the
+    /// (RWT, USDC) pair is accepted by the strict gate.
+    #[test]
+    fn accepts_usdc_pair_when_pinned() {
+        let synthetic_usdc: [u8; 32] = [0x11; 32];
+        let synthetic_usdy: [u8; 32] = [0x22; 32];
+        // Canonical order: [0x11; 32] < RWT_MINT (which starts with 0xa6),
+        // so a == synthetic_usdc.
+        let mint_a = synthetic_usdc;
+        let mint_b = RWT_MINT;
+        assert!(
+            validate_mint_pair_for_master_pool_with(
+                &mint_a,
+                &mint_b,
+                &synthetic_usdc,
+                &synthetic_usdy
+            )
+            .is_ok()
+        );
+    }
+
+    /// Pinned-mode happy path — (RWT, USDY) accepted by the strict gate
+    /// when USDY is pinned independently of USDC.
+    #[test]
+    fn accepts_usdy_pair_when_pinned() {
+        let synthetic_usdc: [u8; 32] = [0x11; 32];
+        let synthetic_usdy: [u8; 32] = [0x22; 32];
+        // Canonical order: [0x22; 32] < RWT_MINT, so a == synthetic_usdy.
+        let mint_a = synthetic_usdy;
+        let mint_b = RWT_MINT;
+        assert!(
+            validate_mint_pair_for_master_pool_with(
+                &mint_a,
+                &mint_b,
+                &synthetic_usdc,
+                &synthetic_usdy
+            )
+            .is_ok()
+        );
+    }
+
+    /// Mixed-pin mode — only USDC is pinned, USDY is still the
+    /// placeholder. The strict gate must still fire on a non-USDC mint
+    /// (USDY zero-mint match is short-circuited because USDY isn't
+    /// pinned). This guards against a partial-pin rollout regression.
+    #[test]
+    fn rejects_non_usdc_when_only_usdc_pinned() {
+        let synthetic_usdc: [u8; 32] = [0x11; 32];
+        let placeholder_usdy: [u8; 32] = [0; 32];
+        let mint_a = RWT_MINT;
+        let mint_b = random_non_usdx_mint();
+        let err = validate_mint_pair_for_master_pool_with(
+            &mint_a,
+            &mint_b,
+            &synthetic_usdc,
+            &placeholder_usdy,
+        )
+        .unwrap_err();
+        assert_eq!(custom_code(err), code_of(DexError::InvalidMintPair));
+    }
+
+    /// USDY happy-path test against the actual production constants is
+    /// intentionally a deferred scenario: until `USDY_MINT` is pinned at
+    /// mainnet (mirror of the RWT_MINT MAINNET-REPLACE pattern), it
+    /// shares the zero-byte placeholder with `USDC_MINT`. The pinned-
+    /// mode tests above (`accepts_usdy_pair_when_pinned`,
+    /// `rejects_non_usdc_when_only_usdc_pinned`) cover the eventual
+    /// production behaviour via the explicit-args twin.
 
     // ----------------------------------------------------------------
     // Permanent-tail offset gate (CP-4 docs §228)
