@@ -10,7 +10,9 @@
 //! `nexus_deposit` and `nexus_record_deposit` may bump it; nothing
 //! decrements it, including this handler). The invariant
 //!
-//!     ata_balance >= total_deposited_<token>   (at the moment of withdraw)
+//! ```text
+//! ata_balance >= total_deposited_<token>   (at the moment of withdraw)
+//! ```
 //!
 //! is **required** for the Nexus to honour deposit redemption semantics
 //! across the protocol's lifetime. Withdrawing principal would silently
