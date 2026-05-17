@@ -118,17 +118,6 @@ pub struct PoolUnpaused {
     pub timestamp: i64,
 }
 
-#[event]
-pub struct LiquidityShifted {
-    pub pool: [u8; 32],
-    pub rebalancer: [u8; 32],
-    pub old_lower: i32,
-    pub old_upper: i32,
-    pub new_lower: i32,
-    pub new_upper: i32,
-    pub timestamp: i64,
-}
-
 /// Emitted by `compound_yield` when the pool PDA successfully claims vested
 /// RWT from a Yield Distribution distributor and folds the received amount
 /// back into `reserve_<rwt_side>`. `rwt_side` encodes which side of the pair

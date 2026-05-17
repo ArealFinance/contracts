@@ -74,12 +74,6 @@ pub enum DexError {
     InvalidBinRange,
     #[msg("No liquidity in bins for swap")]
     InsufficientBinLiquidity,
-    #[msg("Shift distance exceeds MAX_SHIFT_DISTANCE")]
-    ShiftTooLarge,
-    #[msg("New range must differ from current range")]
-    ShiftNoOp,
-    #[msg("Conservation invariant violated after shift")]
-    ConservationViolation,
     #[msg("Pool type mismatch")]
     InvalidPoolType,
     // ----- Layer 8 (compound_yield) -----

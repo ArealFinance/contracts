@@ -69,7 +69,6 @@ use instructions::add_liquidity::AddLiquidity;
 use instructions::zap_liquidity::ZapLiquidity;
 use instructions::remove_liquidity::RemoveLiquidity;
 use instructions::swap::Swap;
-use instructions::shift_liquidity::ShiftLiquidity;
 use instructions::update_dex_config::UpdateDexConfig;
 use instructions::update_areal_fee_destination::UpdateArealFeeDestination;
 use instructions::update_pool_creators::UpdatePoolCreators;
@@ -146,16 +145,6 @@ pub mod native_dex {
     #[inline(never)]
     pub fn swap(ctx: Context<Swap>, amount_in: u64, min_amount_out: u64, a_to_b: bool) -> Result<()> {
         crate::instructions::swap::handler(ctx, amount_in, min_amount_out, a_to_b)
-    }
-
-    /// Redistribute bin liquidity to track NAV price. Rebalancer only.
-    #[inline(never)]
-    pub fn shift_liquidity(
-        ctx: Context<ShiftLiquidity>,
-        nav_bin: i32,
-        target_bin_count: u16,
-    ) -> Result<()> {
-        crate::instructions::shift_liquidity::handler(ctx, nav_bin, target_bin_count)
     }
 
     /// Update DEX config: fees, rebalancer, active status. Authority only.

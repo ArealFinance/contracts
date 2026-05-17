@@ -5,7 +5,6 @@ pub mod add_liquidity;
 pub mod zap_liquidity;
 pub mod remove_liquidity;
 pub mod swap;
-pub mod shift_liquidity;
 pub mod update_dex_config;
 pub mod update_areal_fee_destination;
 pub mod update_pool_creators;

@@ -150,7 +150,8 @@ pub fn sync_fee_lp_to_bin(
     let lower = bin_array.lower_bin_id;
     if active < lower || active > lower + MAX_BINS as i32 - 1 {
         // Active bin out of range — fee_lp tracked in reserves but not in bins.
-        // This is a minor discrepancy that shift_liquidity will resolve.
+        // This is a minor discrepancy that grow_liquidity / compress_liquidity
+        // (CP-7) will resolve when the ladder is next rebalanced.
         return Ok(());
     }
     let idx = (active - lower) as usize;
@@ -458,105 +459,3 @@ pub fn distribute_to_bins(
     Ok(())
 }
 
-/// Redistribute liquidity using pyramid formula for shift_liquidity.
-///
-/// Asymmetric 2:1 pyramid: bid side gets 2/3 USDC, ask side gets 1/3 RWT.
-/// nav_bin gets the remainder (peak, both tokens).
-/// Conservation invariant: sum(bins) == original totals per token.
-///
-/// All bins are zeroed then refilled. This is intentional — ensures bins
-/// outside the target range are properly cleared.
-pub fn shift_pyramid(
-    bin_array: &mut BinArray,
-    nav_bin: i32,
-    target_bin_count: u16,
-) -> core::result::Result<(), ProgramError> {
-    let half = target_bin_count as i32 / 2;
-    let new_lower = nav_bin - half;
-    let new_upper = nav_bin + (target_bin_count as i32 - 1 - half);
-
-    // Validate range fits within BinArray
-    if new_lower < bin_array.lower_bin_id || new_upper > bin_array.lower_bin_id + MAX_BINS as i32 - 1 {
-        return Err(ProgramError::from(DexError::InvalidBinRange));
-    }
-
-    // Collect total liquidity across ALL bins
-    let mut total_usdc: u128 = 0;
-    let mut total_rwt: u128 = 0;
-    for i in 0..MAX_BINS {
-        total_usdc += bin_array.bins[i].liquidity_b as u128;
-        total_rwt += bin_array.bins[i].liquidity_a as u128;
-    }
-
-    // Zero all bins (intentional: clear bins outside target range)
-    for i in 0..MAX_BINS {
-        bin_array.bins[i].liquidity_a = 0;
-        bin_array.bins[i].liquidity_b = 0;
-    }
-
-    // Bid side targets (bins below nav_bin): USDC only, pyramid weight
-    let bid_total_usdc = total_usdc * 2 / 3;
-    let mut total_bid_weight: u128 = 0;
-    for bin_id in new_lower..nav_bin {
-        let weight = (bin_id - new_lower + 1) as u128;
-        total_bid_weight += weight;
-    }
-
-    let mut sum_bid_usdc: u128 = 0;
-    if total_bid_weight > 0 {
-        for bin_id in new_lower..nav_bin {
-            let idx = (bin_id - bin_array.lower_bin_id) as usize;
-            let weight = (bin_id - new_lower + 1) as u128;
-            let target = arlex_lang::math::checked_mul_div_u128(bid_total_usdc, weight, total_bid_weight)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
-            bin_array.bins[idx].liquidity_b = u64::try_from(target)
-                .map_err(|_| ProgramError::from(DexError::MathOverflow))?;
-            sum_bid_usdc += target;
-        }
-    }
-
-    // Ask side targets (bins above nav_bin): RWT only, pyramid weight
-    let ask_total_rwt = total_rwt / 3;
-    let mut total_ask_weight: u128 = 0;
-    for bin_id in (nav_bin + 1)..=new_upper {
-        let weight = (new_upper - bin_id + 1) as u128;
-        total_ask_weight += weight;
-    }
-
-    let mut sum_ask_rwt: u128 = 0;
-    if total_ask_weight > 0 {
-        for bin_id in (nav_bin + 1)..=new_upper {
-            let idx = (bin_id - bin_array.lower_bin_id) as usize;
-            let weight = (new_upper - bin_id + 1) as u128;
-            let target = arlex_lang::math::checked_mul_div_u128(ask_total_rwt, weight, total_ask_weight)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
-            bin_array.bins[idx].liquidity_a = u64::try_from(target)
-                .map_err(|_| ProgramError::from(DexError::MathOverflow))?;
-            sum_ask_rwt += target;
-        }
-    }
-
-    // nav_bin gets REMAINDER (peak of pyramid, both tokens)
-    let nav_idx = (nav_bin - bin_array.lower_bin_id) as usize;
-    let nav_usdc = total_usdc.checked_sub(sum_bid_usdc)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
-    let nav_rwt = total_rwt.checked_sub(sum_ask_rwt)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
-    bin_array.bins[nav_idx].liquidity_b = u64::try_from(nav_usdc)
-        .map_err(|_| ProgramError::from(DexError::MathOverflow))?;
-    bin_array.bins[nav_idx].liquidity_a = u64::try_from(nav_rwt)
-        .map_err(|_| ProgramError::from(DexError::MathOverflow))?;
-
-    // Defense-in-depth: verify conservation invariant
-    let mut check_usdc: u128 = 0;
-    let mut check_rwt: u128 = 0;
-    for i in 0..MAX_BINS {
-        check_usdc += bin_array.bins[i].liquidity_b as u128;
-        check_rwt += bin_array.bins[i].liquidity_a as u128;
-    }
-    if check_usdc != total_usdc || check_rwt != total_rwt {
-        return Err(ProgramError::from(DexError::ConservationViolation));
-    }
-
-    Ok(())
-}

@@ -21,10 +21,6 @@ pub const POOL_TYPE_CONCENTRATED: u8 = 1;
 pub const MAX_BINS: usize = 1000;
 pub const DEFAULT_BIN_STEP_BPS: u16 = 10;            // 0.1% price step between bins
 pub const MAX_BIN_STEP_BPS: u16 = 500;               // 5% max step — prevents extreme price jumps
-// CP-1 NOTE: `MAX_SHIFT_DISTANCE` is retained for one more commit so the
-// soon-to-be-deleted `shift_liquidity` instruction continues to compile.
-// CP-2 removes both the constant and the instruction in the same sweep.
-pub const MAX_SHIFT_DISTANCE: i32 = 35;              // Max bins from active_bin to nav_bin
 pub const MAX_INITIAL_ACTIVE_BIN: i32 = 10_000;     // Reasonable range for initial_active_bin
 pub const CONCENTRATED_SCALE: u128 = 1_000_000_000_000; // 10^12 for pow_bps
 

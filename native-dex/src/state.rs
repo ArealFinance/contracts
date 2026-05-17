@@ -72,8 +72,8 @@ pub struct PoolState {
     //
     // All five anchors are zero-default for StandardCurve pools. The new
     // `compress_liquidity` / `grow_liquidity` handlers (CP-4/CP-5) initialise
-    // them at concentrated-pool creation; legacy `shift_liquidity` does not
-    // read them and is removed in CP-2.
+    // them at concentrated-pool creation. The legacy `shift_liquidity`
+    // instruction was removed in CP-2.
     /// Leftmost bin currently bracketed by the Monotonic Ladder (active
     /// extended bid edge). Initialised by `create_concentrated_pool`,
     /// advanced by `compress_liquidity`.
