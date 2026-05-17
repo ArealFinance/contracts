@@ -15,10 +15,26 @@ pub const POOL_TYPE_CONCENTRATED: u8 = 1;
 //
 // CP-1 Monotonic Ladder rewrite (docs/changelog/2026-04-17-monotonic-ladder.mdx):
 // MAX_BINS was 70 in the legacy pyramid layout; the Monotonic Ladder uses a
-// 1000-bin log-scale BinArray covering ~NAV × 2.7 growth at 0.1% step
-// (~10+ years at 7% APY). StandardCurve pools never read past the active
-// region, so the larger array is rent-only impact for legacy pools.
-pub const MAX_BINS: usize = 1000;
+// log-scale BinArray.
+//
+// CP-1 hotfix (2026-05-17): MAX_BINS reduced 1000 → 630 to fit the Solana
+// CPI realloc limit (`MAX_PERMITTED_DATA_INCREASE = 10_240` bytes per inner
+// instruction). At 16 bytes per bin plus 43 bytes of trailing scalar fields
+// and the 8-byte arlex account discriminator, 630 bins keeps the BinArray
+// account at 10_131 bytes — ~109 bytes of buffer below the runtime cap.
+// StandardCurve pools never read past the active region, so the larger array
+// is rent-only impact for legacy pools.
+//
+// Coverage at bin_step_bps=10 (0.1% per bin):
+// - NAV growth × (1.001)^630 ≈ 1.877
+// - ~9.3 years at 7% APY, ~6.6 years at 10% APY
+//
+// The original spec (`docs/changelog/2026-04-17-monotonic-ladder.mdx`) sized
+// for 1000 bins / 10+ years, but the Solana 3.x CPI realloc limit was
+// identified during CP-12 deploy verification. Lifting >10_240 requires
+// splitting BinArray creation into a 2-ix flow (create + extend_bin_array),
+// tracked as a separate ticket.
+pub const MAX_BINS: usize = 630;
 pub const DEFAULT_BIN_STEP_BPS: u16 = 10;            // 0.1% price step between bins
 pub const MAX_BIN_STEP_BPS: u16 = 500;               // 5% max step — prevents extreme price jumps
 pub const MAX_INITIAL_ACTIVE_BIN: i32 = 10_000;     // Reasonable range for initial_active_bin
@@ -85,10 +101,10 @@ pub const USDY_MINT: [u8; 32] = [0u8; 32];
 // with the production RWT mint. Mismatch causes silent DoS on token-pair
 // validation across DEX swap/RWT/Layer 8 claim flows.
 pub const RWT_MINT: [u8; 32] = [
-    0x29, 0xcd, 0xfa, 0x85, 0x2d, 0x5e, 0xd9, 0x39,
-    0x85, 0x2c, 0x4a, 0x70, 0x9b, 0x3c, 0x8a, 0x66,
-    0x63, 0x91, 0x04, 0xd2, 0x41, 0x9a, 0xf5, 0xd5,
-    0xf3, 0x51, 0x9e, 0xce, 0x47, 0x59, 0xf1, 0xa9,
+    0xfe, 0x25, 0x03, 0x40, 0x7f, 0x74, 0x89, 0x10,
+    0x1c, 0x81, 0x60, 0x2a, 0x86, 0x75, 0xa9, 0x7b,
+    0xee, 0xf4, 0xa0, 0x6a, 0xa4, 0x1a, 0xb4, 0x89,
+    0x3f, 0xbf, 0x30, 0x62, 0x12, 0x72, 0x16, 0x33,
 ];
 
 // USDC_MINT — devnet test USDC (4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU)

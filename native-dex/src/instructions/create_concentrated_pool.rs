@@ -169,8 +169,10 @@ pub fn handler(
     }
 
     // `BinArray::SPACE` is derived from `core::mem::size_of::<BinArray>() + 8`
-    // (account discriminator), so the 1000-bin layout (CP-1) is honoured
-    // automatically — no literal bin count to keep in sync here.
+    // (account discriminator), so the CP-1 hotfix 630-bin layout is honoured
+    // automatically — no literal bin count to keep in sync here. SPACE must
+    // stay ≤ 10_240 (Solana CPI inner-instruction realloc limit), enforced by
+    // a compile-time assert in `state.rs`.
     let bin_lamports = rent.try_minimum_balance(BinArray::SPACE)?;
     arlex_lang::system::instructions::CreateAccount {
         from: ctx.accounts.creator,
@@ -252,8 +254,8 @@ pub fn handler(
     //
     // CP-4: anchor `lower_bin_id` at the permanent tail floor instead of
     // the old `initial_active_bin − MAX_BINS/2` symmetric layout. The
-    // 1000-bin Monotonic Ladder grows monotonically upward from the
-    // permanent tail; the array is structured as
+    // 630-bin Monotonic Ladder (CP-1 hotfix 2026-05-17) grows monotonically
+    // upward from the permanent tail; the array is structured as
     //   [permanent_tail | gap | active_zone | organic_ask | right-edge buffer].
     let bins = BinArray::init(ctx.accounts.bin_array, ctx.program_id)?;
     bins.pool = pool_key;
@@ -669,15 +671,17 @@ mod tests {
         assert_eq!({ bins.active_bin_id }, 12_345);
     }
 
-    /// CP-1 carryover sanity — BinArray must be the 1000-bin layout. The
-    /// constructor allocates `BinArray::SPACE` bytes (CP-1 ladder size);
-    /// if the literal `1171` (old 70-bin space) ever sneaks back in,
-    /// `BinArray::SPACE` would still be the truthful 16_051. We assert
-    /// the SPACE here so any drift in the rent calculation immediately
-    /// surfaces.
+    /// CP-1 carryover sanity — BinArray must be the post-hotfix 630-bin
+    /// layout (was 1000-bin pre-2026-05-17; reduced to fit the Solana CPI
+    /// inner-instruction realloc limit of 10_240 bytes). The constructor
+    /// allocates `BinArray::SPACE` bytes (CP-1 ladder size); if the literal
+    /// `1171` (old 70-bin space) or `16_051` (pre-hotfix 1000-bin space)
+    /// ever sneaks back in, `BinArray::SPACE` would still be the truthful
+    /// 10_131. We assert the SPACE here so any drift in the rent
+    /// calculation immediately surfaces.
     #[test]
     fn bin_array_space_is_cp1_ladder_size() {
-        assert_eq!(BinArray::SPACE, 16_051);
+        assert_eq!(BinArray::SPACE, 10_131);
     }
 
     /// Boundary anchor check — offset at the documented minimum (= 30 bps)

@@ -159,29 +159,38 @@ pub struct Bin {
 const _: () = assert!(core::mem::size_of::<Bin>() == 16);
 
 // =============================================================================
-// BinArray — 16_051 bytes (8 discriminator + 16_043 data)
+// BinArray — 10_131 bytes (8 discriminator + 10_123 data)
 // PDA Seed: ["bins", pool_state]
 //
 // CP-1 Monotonic Ladder rewrite (docs/changelog/2026-04-17-monotonic-ladder.mdx
-// §50): MAX_BINS grew 70 → 1000 to host the log-scale ladder. The 16 KB
-// account fits comfortably inside the Solana 10 MB account-size ceiling and
-// costs ~0.11 SOL of rent per master pool. Concentrated bin-walk swap math
-// (concentrated.rs) is bounds-checked against `MAX_BINS` symbolically so it
-// scales without code changes.
+// §50): MAX_BINS grew 70 → 1000 (later 630, see below) to host the log-scale
+// ladder. Concentrated bin-walk swap math (concentrated.rs) is bounds-checked
+// against `MAX_BINS` symbolically so it scales without code changes.
+//
+// CP-1 hotfix (2026-05-17): MAX_BINS = 630, not 1000. `create_concentrated_pool`
+// creates the BinArray PDA via an inner CPI to the System Program, and Solana
+// 3.x caps inner-CPI account-data growth at `MAX_PERMITTED_DATA_INCREASE =
+// 10_240` bytes. 630 bins keeps `BinArray::SPACE` at 10_131 (~109 B buffer).
+// Lifting beyond 10_240 requires splitting BinArray creation into a 2-ix flow
+// (create + extend_bin_array), tracked as a separate ticket.
 // =============================================================================
 
 #[account]
 pub struct BinArray {
     pub pool: [u8; 32],                          // 32
-    pub bins: [Bin; crate::constants::MAX_BINS], // 16_000 (1000 × 16)
+    pub bins: [Bin; crate::constants::MAX_BINS], // 10_080 (630 × 16)
     pub lower_bin_id: i32,                       // 4
     pub bin_step_bps: u16,                       // 2
     pub active_bin_id: i32,                      // 4
     pub bump: u8,                                // 1
 }
-// SIZE = 16_043, SPACE = 8 + 16_043 = 16_051
+// SIZE = 10_123, SPACE = 8 + 10_123 = 10_131
 
-const _: () = assert!(core::mem::size_of::<BinArray>() == 16_043);
+const _: () = assert!(core::mem::size_of::<BinArray>() == 10_123);
+// CP-1 hotfix — pin BinArray::SPACE under the Solana CPI realloc limit at
+// compile time. Any future bump of MAX_BINS that would push SPACE > 10_240
+// must first split BinArray creation into a 2-ix flow.
+const _: () = assert!(BinArray::SPACE <= 10_240);
 
 // =============================================================================
 // LiquidityNexus — 58 bytes (8 discriminator + 50 data)
@@ -314,23 +323,75 @@ mod tests {
         assert_eq!({ pool._pad_monotonic }, [0u8; 2]);
     }
 
-    /// CP-1 — pin BinArray repr-C layout at 16_043 bytes (32 + 1000 × 16 +
-    /// 4 + 2 + 4 + 1). Catches drift if MAX_BINS, the Bin struct, or any of
+    /// CP-1 hotfix — pin BinArray repr-C layout at 10_123 bytes (32 + 630 × 16
+    /// + 4 + 2 + 4 + 1). Catches drift if MAX_BINS, the Bin struct, or any of
     /// the trailing scalar fields are touched without a state migration plan.
     #[test]
     fn bin_array_size_matches_repr_c() {
-        assert_eq!(core::mem::size_of::<BinArray>(), 16_043);
-        assert_eq!(BinArray::SPACE, 16_051);
+        assert_eq!(core::mem::size_of::<BinArray>(), 10_123);
+        assert_eq!(BinArray::SPACE, 10_131);
     }
 
-    /// CP-1 — sanity pin for MAX_BINS itself. Bin-walk swap and bin
+    /// CP-1 hotfix — sanity pin for MAX_BINS itself. Bin-walk swap and bin
     /// distribution math everywhere in `concentrated.rs` is bounded by
     /// MAX_BINS symbolically, but having the literal value asserted catches
     /// an accidental edit that compiles but breaks Monotonic Ladder
-    /// dimensioning.
+    /// dimensioning. Value was reduced 1000 → 630 to fit the Solana CPI
+    /// realloc limit; see `constants.rs::MAX_BINS` for the rationale.
     #[test]
-    fn bin_array_max_bins_is_1000() {
-        assert_eq!(crate::constants::MAX_BINS, 1000);
+    fn bin_array_max_bins_is_630() {
+        assert_eq!(crate::constants::MAX_BINS, 630);
+    }
+
+    /// CP-1 hotfix — `BinArray::SPACE` must stay under the Solana 3.x CPI
+    /// inner-instruction account-data realloc limit
+    /// (`MAX_PERMITTED_DATA_INCREASE = 10_240` bytes). `create_concentrated_pool`
+    /// invokes `system::CreateAccount` via CPI to allocate the BinArray PDA,
+    /// and exceeding this limit panics the program with
+    /// "Account data size realloc limited to 10240 in inner instructions".
+    /// This test is the runtime witness for the compile-time assert above.
+    #[test]
+    fn bin_array_fits_solana_cpi_realloc_limit() {
+        const SOLANA_CPI_REALLOC_LIMIT: usize = 10_240;
+        assert!(
+            BinArray::SPACE <= SOLANA_CPI_REALLOC_LIMIT,
+            "BinArray::SPACE ({}) exceeds Solana CPI realloc limit ({})",
+            BinArray::SPACE,
+            SOLANA_CPI_REALLOC_LIMIT,
+        );
+    }
+
+    /// CP-1 hotfix — explicit witness that 630 bins at bin_step_bps = 10 cover
+    /// at least 7 years of NAV growth at 7% APY. Documents the coverage
+    /// trade-off introduced by the MAX_BINS reduction (was 1000 / ~14 years;
+    /// now 630 / ~9.3 years).
+    ///
+    /// At step = 0.1%/bin, NAV growth multiplier is (1.001)^630 ≈ 1.877.
+    /// 7% APY for 7 years compounded ≈ 1.605, comfortably below 1.877. We
+    /// compute the floor multiplier via `arlex_lang::math::pow_bps` (the same
+    /// helper concentrated.rs uses for bin pricing) so the assertion travels
+    /// with whatever fixed-point rounding the production math applies.
+    #[test]
+    fn bin_array_coverage_at_basic_step_seven_years_at_seven_apy() {
+        const SCALE: u128 = crate::constants::CONCENTRATED_SCALE; // 10^12
+
+        // (1 + 0.001)^630 — the ladder's NAV-growth multiplier at default step.
+        let ladder_growth =
+            arlex_lang::math::pow_bps(10, crate::constants::MAX_BINS as i32).unwrap();
+
+        // 7% APY for 7 years compounded ≈ (1.07)^7. Use the same helper for
+        // an apples-to-apples comparison. 7% = 700 bps, exp = 7.
+        let seven_yr_growth = arlex_lang::math::pow_bps(700, 7).unwrap();
+
+        assert!(
+            ladder_growth > seven_yr_growth,
+            "ladder growth (1.001^630 ≈ {} / SCALE) must exceed 7y at 7% APY ({} / SCALE)",
+            ladder_growth,
+            seven_yr_growth,
+        );
+        // Also pin the ladder growth is at least ~1.5× (sanity check on the
+        // helper itself — guards against an accidental no-op).
+        assert!(ladder_growth >= SCALE + SCALE / 2);
     }
 
     /// D28 — newly-created PoolState accounts must default-init both

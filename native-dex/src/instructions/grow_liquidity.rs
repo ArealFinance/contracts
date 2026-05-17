@@ -435,8 +435,11 @@ mod tests {
     }
 
     /// Right-edge buffer revert — `new_nav_bin = 995` with `lower = 0`
-    /// and `MAX_BINS = 1000` leaves only 4 trailing bins of headroom
-    /// (`upper - new_nav_bin = 4`, below `RIGHT_EDGE_BUFFER_BINS = 10`).
+    /// sits far above the post-hotfix `upper = lower + MAX_BINS - 1 = 629`,
+    /// so the right-edge gate at `new_nav_bin > upper - RIGHT_EDGE_BUFFER_BINS`
+    /// fires first. The specific test value (995) predates the MAX_BINS
+    /// reduction; either way the gate must reject and surface
+    /// `ExceedsRightEdgeBuffer`.
     #[test]
     fn rejects_right_edge_buffer() {
         let mut ba = empty_bin_array(0, 800);
@@ -460,9 +463,15 @@ mod tests {
     ///   3. Permanent tail and organic ask untouched.
     #[test]
     fn happy_path_redistributes_correctly() {
-        let mut ba = empty_bin_array(0, 500);
-        // Seed old active zone [461..=500] with 10_000 USDC each.
-        for bin_id in 461..=500 {
+        // CP-1 hotfix: MAX_BINS = 630, upper = 629; the pre-hotfix layout
+        // (current_active = 500, new_nav_bin = 600, organic ask at 700)
+        // no longer fits — `new_nav_bin > upper - RIGHT_EDGE_BUFFER_BINS`
+        // would reject it. Slide the test into the new range while keeping
+        // the same semantic structure: grow from `current_active = 400`
+        // to `new_nav_bin = 480` with organic ask at bin 500.
+        let mut ba = empty_bin_array(0, 400);
+        // Seed old active zone [361..=400] with 10_000 USDC each.
+        for bin_id in 361..=400 {
             let idx = (bin_id - ba.lower_bin_id) as usize;
             ba.bins[idx].liquidity_b = 10_000;
         }
@@ -472,28 +481,29 @@ mod tests {
             let idx = (bin_id - ba.lower_bin_id) as usize;
             ba.bins[idx].liquidity_b = 1_234;
         }
-        // Seed organic ask at bin 700 with RWT — must survive.
-        let i700 = (700 - ba.lower_bin_id) as usize;
-        ba.bins[i700].liquidity_a = 42_000;
+        // Seed organic ask at bin 500 with RWT — must survive. Sits well
+        // above the new active zone upper bound and inside `upper = 629`.
+        let i_organic = (500 - ba.lower_bin_id) as usize;
+        ba.bins[i_organic].liquidity_a = 42_000;
 
         let fresh = 50_000u64;
         let new_active_lo = grow_redistribute(
             &mut ba,
             /* left_anchor_bin */ 100,
             /* permanent_tail_floor_bin */ 30,
-            /* last_rebalance_nav_bin */ 500,
-            /* new_nav_bin */ 600,
+            /* last_rebalance_nav_bin */ 400,
+            /* new_nav_bin */ 480,
             ACTIVE_ZONE_WIDTH,
             fresh,
         )
         .expect("grow_redistribute");
 
-        // (1) Lower bound = new_nav_bin - ACTIVE_ZONE_WIDTH + 1 = 561.
-        assert_eq!(new_active_lo, 561);
+        // (1) Lower bound = new_nav_bin - ACTIVE_ZONE_WIDTH + 1 = 441.
+        assert_eq!(new_active_lo, 441);
 
         // (2) New active zone holds redistributed USDC (sum within 40-ulp).
         let mut new_zone_total: u128 = 0;
-        for bin_id in new_active_lo..=600 {
+        for bin_id in new_active_lo..=480 {
             let idx = (bin_id - ba.lower_bin_id) as usize;
             new_zone_total += { ba.bins[idx].liquidity_b } as u128;
         }
@@ -511,6 +521,6 @@ mod tests {
             assert_eq!({ ba.bins[idx].liquidity_b }, 1_234u64);
         }
         // (3b) Organic ask RWT survives.
-        assert_eq!({ ba.bins[i700].liquidity_a }, 42_000u64);
+        assert_eq!({ ba.bins[i_organic].liquidity_a }, 42_000u64);
     }
 }

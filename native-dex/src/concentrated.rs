@@ -900,33 +900,38 @@ mod tests {
     }
 
     /// Organic ask bins above the current active bin keep their RWT.
+    ///
+    /// CP-1 hotfix: MAX_BINS = 630, upper = 629. The pre-hotfix shape
+    /// (current_active = 500, target = 600, organic ask at 700) no longer
+    /// fits — `new_nav_bin > upper - RIGHT_EDGE_BUFFER_BINS` would reject.
+    /// Slide everything down: grow from 400 → 480, organic ask at 500.
     #[test]
     fn grow_redistribute_organic_ask_untouched() {
         let lower = 0i32;
-        let mut ba = empty_bin_array(lower, 500);
-        for bin_id in 461..=500 {
+        let mut ba = empty_bin_array(lower, 400);
+        for bin_id in 361..=400 {
             set_b(&mut ba, bin_id, 5_000);
         }
-        // Sparse organic ask between current active (500) and target (600)
-        // outside the new active zone (which is [561..=600]).
-        set_a(&mut ba, 520, 7_777);
-        set_a(&mut ba, 540, 9_999);
+        // Sparse organic ask between current active (400) and target (480)
+        // outside the new active zone (which is [441..=480]).
+        set_a(&mut ba, 420, 7_777);
+        set_a(&mut ba, 430, 9_999);
         // Organic ask above target also exists.
-        set_a(&mut ba, 700, 12_345);
+        set_a(&mut ba, 500, 12_345);
 
-        grow_redistribute(&mut ba, 100, 100, 500, 600, ACTIVE_ZONE_WIDTH, 10_000)
+        grow_redistribute(&mut ba, 100, 100, 400, 480, ACTIVE_ZONE_WIDTH, 10_000)
             .expect("grow_redistribute");
 
         // Bins outside the new active zone keep RWT unchanged.
-        // (Bins 520, 540 are below new_zone_lower=561, so they're "extended
+        // (Bins 420, 430 are below new_zone_lower=441, so they're "extended
         // bid" and we don't touch liquidity_a.) `Bin` is repr(C, packed) so
         // reads must go through copies.
-        let i520 = idx(&ba, 520);
-        let i540 = idx(&ba, 540);
-        let i700 = idx(&ba, 700);
-        assert_eq!({ ba.bins[i520].liquidity_a }, 7_777u64);
-        assert_eq!({ ba.bins[i540].liquidity_a }, 9_999u64);
-        assert_eq!({ ba.bins[i700].liquidity_a }, 12_345u64);
+        let i420 = idx(&ba, 420);
+        let i430 = idx(&ba, 430);
+        let i500 = idx(&ba, 500);
+        assert_eq!({ ba.bins[i420].liquidity_a }, 7_777u64);
+        assert_eq!({ ba.bins[i430].liquidity_a }, 9_999u64);
+        assert_eq!({ ba.bins[i500].liquidity_a }, 12_345u64);
     }
 
     #[test]
@@ -965,8 +970,10 @@ mod tests {
     #[test]
     fn grow_redistribute_rejects_right_edge() {
         // Force new_nav_bin too close to the upper edge of the BinArray.
-        // lower = 0, MAX_BINS = 1000 → upper = 999, buffer = 10 →
-        // any new_nav_bin > 989 should trip ExceedsRightEdgeBuffer.
+        // With the post-hotfix MAX_BINS = 630 and lower = 0, upper = 629,
+        // RIGHT_EDGE_BUFFER_BINS = 10 → any new_nav_bin > 619 trips
+        // `ExceedsRightEdgeBuffer`. The historical test value (995) lands
+        // even further past the upper edge; the gate still rejects.
         let lower = 0i32;
         let mut ba = empty_bin_array(lower, 800);
         let err = grow_redistribute(&mut ba, 50, 50, 800, 995, ACTIVE_ZONE_WIDTH, 0);
