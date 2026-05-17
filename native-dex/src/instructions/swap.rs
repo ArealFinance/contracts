@@ -185,17 +185,7 @@ pub(crate) fn swap_internal<'info>(
         (pool.reserve_b, pool.reserve_a)
     };
 
-    // Determine if token_a is RWT (needed for concentrated fee_lp bin sync)
-    let token_a_is_rwt_side = is_rwt_mint(&pool.token_a_mint);
-
     let (amount_out, fee_lp, fee_protocol, fee_ot_treasury, net_input);
-
-    // Note (Layer 9 D28): `token_a_is_rwt_side` is no longer used by
-    // `sync_fee_lp_to_bin` — fee_lp is tracked exclusively via
-    // `cumulative_fees_per_share_<side>` and is no longer mirrored into
-    // bins or reserves. The local is preserved as `_` to keep its derivation
-    // close to where the fee side is determined for future readers.
-    let _token_a_is_rwt_side = token_a_is_rwt_side;
 
     // Per spec (Fee Architecture Step 4: "Always RWT"; Step 2: Protocol Fee
     // "always in RWT, transferred to areal_fee_destination"), the protocol
