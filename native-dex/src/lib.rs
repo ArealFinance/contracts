@@ -87,6 +87,9 @@ use instructions::nexus_withdraw_profits::NexusWithdrawProfits;
 use instructions::nexus_claim_rewards::NexusClaimRewards;
 // Layer 9 D28 (LP-fee accumulator + claim_lp_fees)
 use instructions::claim_lp_fees::ClaimLpFees;
+// CP-7 Monotonic Ladder Rebalancer ix
+use instructions::grow_liquidity::GrowLiquidity;
+use instructions::compress_liquidity::CompressLiquidity;
 
 declare_id!("DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL");
 
@@ -365,5 +368,55 @@ pub mod native_dex {
     #[inline(never)]
     pub fn claim_lp_fees(ctx: Context<ClaimLpFees>) -> Result<()> {
         crate::instructions::claim_lp_fees::handler(ctx)
+    }
+
+    // ----- CP-7 Monotonic Ladder Rebalancer ix -----
+
+    /// Pool Rebalancer extends the active bid wall rightward when NAV rises
+    /// past the 1% deviation threshold. Pulls fresh USDC from the Nexus
+    /// accumulator (PDA-signed Transfer) and redistributes the existing
+    /// active-zone USDC so the geometric density peak sits at
+    /// `new_nav_bin`. Permanent tail and organic ask never touched.
+    /// Updates `pool.last_rebalance_nav_bin` and `pool.active_zone_lower`;
+    /// `active_bin_id` is NOT moved (only swaps move it per docs §449).
+    ///
+    /// Revert order: `InvalidRebalancer` (signer mismatch) → `InvalidPoolType`
+    /// (StandardCurve) → `PoolNotActive` → `InvalidVault` (foreign USDC
+    /// vault) → `InvalidRwtVault` (foreign rwt_vault) →
+    /// `InvalidTokenAccount` (Nexus ATA SPL-owner mismatch) →
+    /// `InvalidNexusToken` (mint mismatch) → `NexusNotActive` →
+    /// `NexusAccumulatorEmpty` → math reverts (`NotGrowthDirection`,
+    /// `ActiveZoneOverlapsTail`, `ExceedsRightEdgeBuffer`,
+    /// `InvalidBinRange`, `MathOverflow`). Emits `LiquidityGrew`.
+    /// docs/contracts/native-dex.mdx §382-461.
+    #[inline(never)]
+    pub fn grow_liquidity(
+        ctx: Context<GrowLiquidity>,
+        new_nav_bin: i32,
+        active_zone_width: u16,
+    ) -> Result<()> {
+        crate::instructions::grow_liquidity::handler(ctx, new_nav_bin, active_zone_width)
+    }
+
+    /// Pool Rebalancer recenters the active bid wall on a LOWER NAV after a
+    /// governance writedown (`rwt_engine::adjust_capital`). Capital-neutral:
+    /// no token inflow, no Nexus accounts, no vaults. RWT (`liquidity_a`)
+    /// between `new_nav_bin` and the OLD active bin becomes the "frozen
+    /// ask wall" awaiting NAV recovery — `liquidity_a` is preserved
+    /// byte-identical, only `liquidity_b` is redistributed. Permanent tail
+    /// untouched.
+    ///
+    /// Revert order: `InvalidRebalancer` → `InvalidPoolType` →
+    /// `PoolNotActive` → `InvalidRwtVault` → math reverts
+    /// (`NotCompressionDirection`, `ActiveZoneOverlapsTail`,
+    /// `InvalidBinRange`, `MathOverflow`). Emits `LiquidityCompressed`.
+    /// docs/contracts/native-dex.mdx §463-494.
+    #[inline(never)]
+    pub fn compress_liquidity(
+        ctx: Context<CompressLiquidity>,
+        new_nav_bin: i32,
+        active_zone_width: u16,
+    ) -> Result<()> {
+        crate::instructions::compress_liquidity::handler(ctx, new_nav_bin, active_zone_width)
     }
 }

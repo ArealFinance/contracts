@@ -23,3 +23,6 @@ pub mod nexus_withdraw_profits;
 pub mod nexus_claim_rewards;
 // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
 pub mod claim_lp_fees;
+// ----- CP-7 Monotonic Ladder Rebalancer ix -----
+pub mod grow_liquidity;
+pub mod compress_liquidity;

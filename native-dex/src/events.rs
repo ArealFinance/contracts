@@ -256,3 +256,36 @@ pub struct SwapRoutedToMint {
     pub best_ask_price_q: u128,
     pub timestamp: i64,
 }
+
+// ----- CP-7 Monotonic Ladder Rebalancer ix -----
+
+/// Emitted by `grow_liquidity` after a successful upward NAV rebalance. Records
+/// the new NAV bin, the fresh USDC drawn from the Nexus accumulator, and the
+/// new lower edge of the active bid wall. Indexers cross-reference
+/// `fresh_usdc` against the matching `NexusProfitsWithdrawn`-less drain
+/// (Nexus ATA debit signed by the Nexus PDA, no `NexusProfitsWithdrawn`
+/// event — that handler is reserved for Authority-gated profit sweeps).
+/// Body layout: 32 + 4 + 8 + 4 + 8 = 56 bytes.
+#[event]
+pub struct LiquidityGrew {
+    pub pool: [u8; 32],
+    pub new_nav_bin: i32,
+    pub fresh_usdc: u64,
+    pub new_active_zone_lower: i32,
+    pub timestamp: i64,
+}
+
+/// Emitted by `compress_liquidity` after a successful downward NAV rebalance
+/// (capital-neutral — no token flow). Records the new (lower) NAV bin and the
+/// new lower edge of the active bid wall. Off-chain dashboards interpret a
+/// `LiquidityCompressed` event as a writedown signal — RWT in bins between
+/// `new_active_zone_lower + ACTIVE_ZONE_WIDTH` and the OLD NAV bin becomes the
+/// "frozen ask wall" awaiting NAV recovery.
+/// Body layout: 32 + 4 + 4 + 8 = 48 bytes.
+#[event]
+pub struct LiquidityCompressed {
+    pub pool: [u8; 32],
+    pub new_nav_bin: i32,
+    pub new_active_zone_lower: i32,
+    pub timestamp: i64,
+}

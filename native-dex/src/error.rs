@@ -137,4 +137,9 @@ pub enum DexError {
     PriceOverflow,
     #[msg("Mint-route swap requires 4 remaining_accounts after the bin_array slot")]
     MissingMintRouteAccounts,
+    // ----- CP-7 grow_liquidity / compress_liquidity (Rebalancer ix) -----
+    #[msg("Signer is not the dex_config.rebalancer (Pool Rebalancer)")]
+    InvalidRebalancer,
+    #[msg("grow_liquidity called with empty Nexus USDC accumulator")]
+    NexusAccumulatorEmpty,
 }
