@@ -142,4 +142,7 @@ pub enum DexError {
     InvalidRebalancer,
     #[msg("grow_liquidity called with empty Nexus USDC accumulator")]
     NexusAccumulatorEmpty,
+    // ----- CP-12.5 NAV-bin sanity gate -----
+    #[msg("new_nav_bin does not round-trip to vault.nav_book_value within tolerance")]
+    NavBinMismatch,
 }

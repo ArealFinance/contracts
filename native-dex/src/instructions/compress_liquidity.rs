@@ -84,7 +84,7 @@ pub fn handler(
     //    math step; scoped so the mut handle is released before
     //    re-loading at the state-update step.
     let pool_key = pubkey_bytes(ctx.accounts.pool_state);
-    let (pool_left_anchor, pool_last_rebalance) = {
+    let (pool_left_anchor, pool_last_rebalance, pool_bin_step_bps) = {
         let pool = PoolState::load(ctx.accounts.pool_state, ctx.program_id)?;
         if pool.pool_type != POOL_TYPE_CONCENTRATED {
             return Err(ProgramError::from(DexError::InvalidPoolType).into());
@@ -92,15 +92,22 @@ pub fn handler(
         if !pool.is_active {
             return Err(ProgramError::from(DexError::PoolNotActive).into());
         }
-        (pool.left_anchor_bin, pool.last_rebalance_nav_bin)
+        (pool.left_anchor_bin, pool.last_rebalance_nav_bin, pool.bin_step_bps)
     };
 
-    // 3. NAV read — verifies `rwt_vault.owner == RWT_ENGINE_PROGRAM_ID`
-    //    and proves the account is a real RwtVault buffer. NAV value
-    //    itself is currently not asserted against `new_nav_bin` (see
-    //    `grow_liquidity` module-level note on the deferred sanity
-    //    check).
-    let _nav = crate::cpi::read_rwt_vault_nav(ctx.accounts.rwt_vault)?;
+    // 3. NAV read — verifies `rwt_vault.owner == RWT_ENGINE_PROGRAM_ID`,
+    //    discriminator match, and proves the account is a real RwtVault
+    //    buffer. CP-12.5: the NAV value is now consumed by the NAV-bin
+    //    sanity gate below.
+    let nav = crate::cpi::read_rwt_vault_nav(ctx.accounts.rwt_vault)?;
+
+    // 3b. NAV-bin sanity gate (CP-12.5). Symmetric with `grow_liquidity` —
+    //     `new_nav_bin` must round-trip to `nav` within `± 2 × bin_step_bps`,
+    //     removing the trust dependency on the Rebalancer key for
+    //     ladder-geometry correctness.
+    if !concentrated::nav_bin_within_tolerance(new_nav_bin, nav, pool_bin_step_bps)? {
+        return Err(ProgramError::from(DexError::NavBinMismatch).into());
+    }
 
     // 4. Math — `compress_redistribute` enforces direction
     //    (`NotCompressionDirection` if `new_nav_bin >= last_rebalance_nav_bin`),
@@ -194,6 +201,19 @@ mod tests {
         Ok(())
     }
 
+    /// CP-12.5 — NAV-bin sanity-gate twin. Mirrors the production check in
+    /// `compress_liquidity` handler step 3b.
+    fn check_nav_bin(
+        new_nav_bin: i32,
+        nav: u64,
+        bin_step_bps: u16,
+    ) -> core::result::Result<(), ProgramError> {
+        if !crate::concentrated::nav_bin_within_tolerance(new_nav_bin, nav, bin_step_bps)? {
+            return Err(ProgramError::from(DexError::NavBinMismatch));
+        }
+        Ok(())
+    }
+
     /// Pool-type gate rejects StandardCurve pools. Symmetric to
     /// `grow_liquidity::tests::rejects_standard_curve`.
     #[test]
@@ -210,6 +230,17 @@ mod tests {
         let other = [0xBBu8; 32];
         let err = check_rebalancer(&rebalancer_key, &other).unwrap_err();
         assert_eq!(custom_code(err), code_of(DexError::InvalidRebalancer));
+    }
+
+    /// CP-12.5 — NAV-bin sanity gate. Symmetric with
+    /// `grow_liquidity::tests::rejects_nav_bin_mismatch`.
+    #[test]
+    fn rejects_nav_bin_mismatch() {
+        // Far-off bin: should fail.
+        let err = check_nav_bin(500, 1_000_000, 10).unwrap_err();
+        assert_eq!(custom_code(err), code_of(DexError::NavBinMismatch));
+        // Matching bin: should pass.
+        assert!(check_nav_bin(0, 1_000_000, 10).is_ok());
     }
 
     /// Direction gate — `new_nav_bin > last_rebalance_nav_bin` reverts

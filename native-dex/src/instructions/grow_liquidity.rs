@@ -136,6 +136,7 @@ pub fn handler(
         pool_tail_floor,
         pool_last_rebalance,
         pool_vault_b_addr,
+        pool_bin_step_bps,
     ) = {
         let pool = PoolState::load(ctx.accounts.pool_state, ctx.program_id)?;
         if pool.pool_type != POOL_TYPE_CONCENTRATED {
@@ -149,6 +150,7 @@ pub fn handler(
             pool.permanent_tail_floor_bin,
             pool.last_rebalance_nav_bin,
             pool.vault_b,
+            pool.bin_step_bps,
         )
     };
 
@@ -159,12 +161,21 @@ pub fn handler(
         return Err(ProgramError::from(DexError::InvalidVault).into());
     }
 
-    // 4. NAV read — verifies `rwt_vault.owner == RWT_ENGINE_PROGRAM_ID`
-    //    and proves the account is a real RwtVault buffer. The NAV value
-    //    itself is currently consumed only for the on-chain ownership
-    //    invariant; the off-chain Rebalancer is trusted for the NAV→bin
-    //    computation (see module-level note on deferred sanity check).
-    let _nav = crate::cpi::read_rwt_vault_nav(ctx.accounts.rwt_vault)?;
+    // 4. NAV read — verifies `rwt_vault.owner == RWT_ENGINE_PROGRAM_ID`,
+    //    discriminator match, and proves the account is a real RwtVault
+    //    buffer. CP-12.5: the NAV value is now consumed by the NAV-bin
+    //    sanity gate below — `new_nav_bin` must round-trip to `nav` within
+    //    `± 2 × bin_step_bps`, removing the trust dependency on the
+    //    Rebalancer key for ladder-geometry correctness.
+    let nav = crate::cpi::read_rwt_vault_nav(ctx.accounts.rwt_vault)?;
+
+    // 4b. NAV-bin sanity gate (CP-12.5). Rejects a compromised Rebalancer
+    //     passing an arbitrary bin to skew the ladder geometry. Tolerance
+    //     window: `nav × bin_step_bps × 2 / 10_000` (covers floor-rounding
+    //     plus a small intra-tx NAV drift).
+    if !concentrated::nav_bin_within_tolerance(new_nav_bin, nav, pool_bin_step_bps)? {
+        return Err(ProgramError::from(DexError::NavBinMismatch).into());
+    }
 
     // 5. Nexus USDC source ATA invariants — SPL-owner must equal the
     //    Nexus PDA (else a foreign USDC ATA could be drained), mint must
@@ -342,6 +353,20 @@ mod tests {
         Ok(())
     }
 
+    /// CP-12.5 — NAV-bin sanity-gate twin. Mirrors the production check in
+    /// handler step 4b: rejects with `NavBinMismatch` when `new_nav_bin`
+    /// does not round-trip the live NAV within `± 2 × bin_step_bps`.
+    fn check_nav_bin(
+        new_nav_bin: i32,
+        nav: u64,
+        bin_step_bps: u16,
+    ) -> core::result::Result<(), ProgramError> {
+        if !crate::concentrated::nav_bin_within_tolerance(new_nav_bin, nav, bin_step_bps)? {
+            return Err(ProgramError::from(DexError::NavBinMismatch));
+        }
+        Ok(())
+    }
+
     // ---- Handler-level pin tests --------------------------------------
 
     /// Pool-type gate rejects StandardCurve pools. The Rebalancer's
@@ -413,6 +438,20 @@ mod tests {
         assert_eq!(custom_code(err), code_of(DexError::NexusAccumulatorEmpty));
         // Any non-zero balance accepted.
         assert!(check_nexus_balance(1).is_ok());
+    }
+
+    /// CP-12.5 — NAV-bin sanity gate. Bin = 0 with `nav = 1_000_000`
+    /// (USDC-6dec for unity) is the exact center of the tolerance window.
+    /// A bin far off (e.g. 500, which corresponds to a price of (1.001)^500
+    /// ≈ 1.649) cannot round-trip a unity NAV — handler rejects with
+    /// `NavBinMismatch`.
+    #[test]
+    fn rejects_nav_bin_mismatch() {
+        // Far-off bin: should fail.
+        let err = check_nav_bin(500, 1_000_000, 10).unwrap_err();
+        assert_eq!(custom_code(err), code_of(DexError::NavBinMismatch));
+        // Matching bin: should pass.
+        assert!(check_nav_bin(0, 1_000_000, 10).is_ok());
     }
 
     /// Tail-overlap revert propagates from `grow_redistribute`.

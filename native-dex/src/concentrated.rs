@@ -395,6 +395,61 @@ pub fn price_at_bin(bin_step_bps: u16, bin: i32) -> Option<u128> {
     arlex_lang::math::pow_bps(bin_step_bps, bin)
 }
 
+/// CP-12.5 NAV-bin sanity gate.
+///
+/// Returns `Ok(true)` iff `price_at_bin(bin)` is within ±`2 × bin_step_bps`
+/// (in basis points) of the live NAV, after lifting NAV from 6-decimal USDC
+/// scale to `CONCENTRATED_SCALE` (12-decimal Q-format) — same conversion
+/// used by `should_route_to_mint` in `swap.rs`.
+///
+/// Tolerance derivation: an off-chain `floor(log(nav)/log(1+step))` can
+/// drop up to 1 bin worth of price; the `× 2` factor leaves headroom for
+/// a small intra-tx NAV drift between the Rebalancer's read and the
+/// on-chain read. At the default `bin_step_bps = 10` (0.1% per bin), the
+/// tolerance window is ±0.2% — still well below any economically
+/// material rebalance.
+///
+/// Returns `Err(DexError::PriceOverflow)` if `price_at_bin` overflows
+/// (i.e. `bin` magnitude exceeds the supported range of `pow_bps`).
+pub fn nav_bin_within_tolerance(
+    bin: i32,
+    nav: u64,
+    bin_step_bps: u16,
+) -> core::result::Result<bool, ProgramError> {
+    // 1. Compute price_at_bin in CONCENTRATED_SCALE units (12-decimal Q).
+    let price_q = price_at_bin(bin_step_bps, bin)
+        .ok_or(ProgramError::from(DexError::PriceOverflow))?;
+
+    // 2. Lift NAV (6-decimal USDC) to CONCENTRATED_SCALE units. Mirrors the
+    //    `should_route_to_mint` conversion: `nav_q = nav * (CONCENTRATED_SCALE / 1_000_000)`.
+    let nav_q = (nav as u128).saturating_mul(CONCENTRATED_SCALE / 1_000_000);
+
+    // 3. Special case: `nav == 0` is pre-init / impaired state. `price_q` is
+    //    always strictly positive for any finite `bin`. We surface this as
+    //    "out of tolerance" — the caller (grow/compress) treats it as a
+    //    hard reject (no NAV → no valid bin).
+    if nav_q == 0 {
+        return Ok(false);
+    }
+
+    // 4. Tolerance window: `nav_q × bin_step_bps × 2 / BPS_DENOMINATOR`. Using
+    //    `u128` throughout — `nav_q` is at most ~`u64::MAX × 1_000_000 < 2^84`,
+    //    so the multiplication cannot overflow even at u16::MAX bps.
+    let tolerance = nav_q
+        .saturating_mul(bin_step_bps as u128)
+        .saturating_mul(2)
+        / (BPS_DENOMINATOR as u128);
+
+    // 5. |price_q - nav_q| ≤ tolerance ?
+    let diff = if price_q >= nav_q {
+        price_q - nav_q
+    } else {
+        nav_q - price_q
+    };
+
+    Ok(diff <= tolerance)
+}
+
 /// Sum `liquidity_b` across `[zone_lower, zone_upper]` (inclusive). Returns
 /// `MathOverflow` on u128 overflow (impossible in practice — `u64 × 40` —
 /// but kept for defense-in-depth) or `InvalidBinRange` if the zone leaves
@@ -812,6 +867,77 @@ mod tests {
     fn price_at_bin_negative_below_unity() {
         let p = price_at_bin(100, -5).expect("price_at_bin(100, -5)");
         assert!(p < CONCENTRATED_SCALE, "price at bin -5 should be < unity");
+    }
+
+    // ---- nav_bin_within_tolerance (CP-12.5) ----------------------------
+
+    /// Bin = 0 exactly matches `nav = 1_000_000` (USDC-6dec for $1.00) →
+    /// difference is 0 → within tolerance.
+    #[test]
+    fn nav_bin_within_tolerance_exact_match_passes() {
+        // price_at_bin(_, 0) == CONCENTRATED_SCALE; nav_q for nav=1_000_000
+        // is 1_000_000 * (CONCENTRATED_SCALE / 1_000_000) == CONCENTRATED_SCALE.
+        let ok = nav_bin_within_tolerance(0, 1_000_000, 10).expect("call");
+        assert!(ok, "exact match (diff=0) must pass");
+    }
+
+    /// Inside the positive edge of the tolerance window — passes. NAV is
+    /// shifted DOWN from the exact center by less than `2 * bin_step_bps`,
+    /// so the integer-arithmetic tolerance (computed against the shifted
+    /// `nav_q`) comfortably covers the bin-vs-NAV gap.
+    #[test]
+    fn nav_bin_within_tolerance_at_positive_edge_passes() {
+        let bin = 0i32;
+        let step = 10u16; // 0.1% per bin → tolerance window ±0.2% (×2)
+        let center_nav: u64 = 1_000_000; // $1.000000
+        // Shift NAV down by step bps (0.1% — well inside ±0.2%).
+        let shifted_nav = center_nav - (center_nav * step as u64) / 10_000;
+        let ok = nav_bin_within_tolerance(bin, shifted_nav, step).expect("call");
+        assert!(ok, "NAV at -1*step (inside ±2*step window) must pass");
+    }
+
+    /// Far outside the positive edge of the tolerance window — fails.
+    /// Shifting by 3*step bps puts the gap > tolerance regardless of how
+    /// the integer math rounds.
+    #[test]
+    fn nav_bin_within_tolerance_at_positive_overshoot_fails() {
+        let bin = 0i32;
+        let step = 10u16;
+        let center_nav: u64 = 1_000_000;
+        let overshoot_nav = center_nav - (center_nav * (3 * step as u64)) / 10_000;
+        let ok = nav_bin_within_tolerance(bin, overshoot_nav, step).expect("call");
+        assert!(!ok, "NAV at -3*step (well beyond ±2*step) must fail");
+    }
+
+    /// Inside the negative edge of the tolerance window — passes. NAV is
+    /// shifted UP from the exact center by less than `2 * bin_step_bps`.
+    #[test]
+    fn nav_bin_within_tolerance_at_negative_edge_passes() {
+        let bin = 0i32;
+        let step = 10u16;
+        let center_nav: u64 = 1_000_000;
+        let shifted_nav = center_nav + (center_nav * step as u64) / 10_000;
+        let ok = nav_bin_within_tolerance(bin, shifted_nav, step).expect("call");
+        assert!(ok, "NAV at +1*step (inside ±2*step window) must pass");
+    }
+
+    /// Far outside the negative edge — fails.
+    #[test]
+    fn nav_bin_within_tolerance_at_negative_overshoot_fails() {
+        let bin = 0i32;
+        let step = 10u16;
+        let center_nav: u64 = 1_000_000;
+        let overshoot_nav = center_nav + (center_nav * (3 * step as u64)) / 10_000;
+        let ok = nav_bin_within_tolerance(bin, overshoot_nav, step).expect("call");
+        assert!(!ok, "NAV at +3*step (well beyond ±2*step) must fail");
+    }
+
+    /// `nav == 0` is treated as out-of-tolerance (pre-init / impaired state
+    /// — no valid bin can round-trip a zero NAV).
+    #[test]
+    fn nav_bin_within_tolerance_zero_nav_fails() {
+        let ok = nav_bin_within_tolerance(0, 0, 10).expect("call");
+        assert!(!ok, "zero NAV must fail the round-trip");
     }
 
     // ---- bin_walk_has_liquidity_above ---------------------------------
