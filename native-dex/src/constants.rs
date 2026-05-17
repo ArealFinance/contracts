@@ -52,6 +52,20 @@ pub const MIN_PERMANENT_TAIL_OFFSET_BPS: i32 = 30;
 /// (docs:234). Never shifted, retained across the protocol lifetime.
 pub const PERMANENT_TAIL_BIN_COUNT: i32 = 70;
 
+/// Q64.64 representation of one (2^64). Used by the Monotonic Ladder
+/// geometric-density helpers (`GEOMETRIC_WEIGHTS`) and shared with the
+/// existing LP-fee accumulator math (`cumulative_fees_per_share_*`). Pulled
+/// into `constants.rs` in CP-3 so growth/compression redistribute helpers
+/// have a single canonical symbol.
+pub const Q64: u128 = 1u128 << 64;
+
+/// Right-edge buffer (in bins) preserved between `last_rebalance_nav_bin`
+/// and the upper bound of the bin array. `grow_redistribute` refuses to
+/// advance the active zone if doing so would leave fewer than this many
+/// trailing bins of organic-ask headroom. Sized so the ladder can keep
+/// re-growing for several rebalance cycles before the array fills.
+pub const RIGHT_EDGE_BUFFER_BINS: i32 = 10;
+
 /// Price offset above NAV at which master-pool USDC→RWT swaps reroute through
 /// `rwt_engine::mint_rwt` instead of consuming organic ask (docs:633 —
 /// `NAV × 1.005`).

@@ -109,4 +109,13 @@ pub enum DexError {
     // ----- Layer 9 D28 (LP-fee accumulator + claim_lp_fees) -----
     #[msg("LpPosition.pool does not match the supplied pool_state")]
     InvalidLpPosition,
+    // ----- CP-3 Monotonic Ladder redistribute helpers -----
+    #[msg("grow_redistribute called with new_nav_bin <= last_rebalance_nav_bin")]
+    NotGrowthDirection,
+    #[msg("compress_redistribute called with new_nav_bin >= last_rebalance_nav_bin")]
+    NotCompressionDirection,
+    #[msg("Active zone lower edge would dip below left_anchor_bin (overlaps permanent tail)")]
+    ActiveZoneOverlapsTail,
+    #[msg("new_nav_bin too close to the BinArray upper edge — exceeds right-edge buffer")]
+    ExceedsRightEdgeBuffer,
 }
