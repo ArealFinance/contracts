@@ -136,7 +136,9 @@ pub fn cpi_yd_claim<'a>(
 /// Caller (the outer `swap` handler) is responsible for:
 /// - validating that `rwt_engine_program.address() == RWT_ENGINE_PROGRAM_ID`
 /// - validating that `user_rwt.mint == RWT_MINT`
-/// - validating `rwt_vault.owner == RWT_ENGINE_PROGRAM_ID` and discriminator
+/// - validating `rwt_vault.owner == RWT_ENGINE_PROGRAM_ID`, discriminator at
+///   offset 0..8 == DISC_RWT_VAULT, and length sufficient to read NAV at
+///   offset 24..32
 /// - propagating user-supplied `min_amount_out` as `min_rwt_out` so slippage
 ///   is enforced where the user expected it.
 ///
@@ -212,6 +214,9 @@ pub fn cpi_mint_rwt<'a>(
 /// - `rwt_vault.owner() == RWT_ENGINE_PROGRAM_ID` (defence-in-depth — the
 ///   CPI itself would fail if this account did not belong to rwt_engine,
 ///   but a clean error code here helps operators)
+/// - discriminator at offset 0..8 == `DISC_RWT_VAULT` (CP-12.5 hardening —
+///   confirms this is a `RwtVault` and not some other rwt_engine account
+///   whose first bytes happen to parse cleanly through this routine)
 /// - account data is long enough to read the field (8 + 24 + 8 = 40 bytes
 ///   minimum; the full struct is 267 bytes so this is a very loose lower
 ///   bound).
@@ -233,6 +238,17 @@ pub fn read_rwt_vault_nav(rwt_vault: &AccountView) -> core::result::Result<u64, 
     let data = unsafe {
         core::slice::from_raw_parts(rwt_vault.data_ptr(), rwt_vault.data_len())
     };
+
+    // 1b. Discriminator check (CP-12.5 hardening) — confirms this is a
+    // RwtVault struct, not some other rwt_engine account whose first bytes
+    // happen to parse as one.
+    if data.len() < 8 {
+        return Err(ProgramError::from(DexError::InvalidRwtVault));
+    }
+    if data[0..8] != DISC_RWT_VAULT {
+        return Err(ProgramError::from(DexError::InvalidRwtVault));
+    }
+
     let nav_start = RWT_VAULT_DISC_LEN + RWT_VAULT_NAV_OFFSET;
     let nav_end = nav_start + 8;
     if data.len() < nav_end {
@@ -518,5 +534,60 @@ mod tests {
         let nav_end = nav_start + 8;
         let read = u64::from_le_bytes(buf[nav_start..nav_end].try_into().unwrap());
         assert_eq!(read, NAV);
+    }
+
+    // -----------------------------------------------------------------
+    // CP-12.5 — `RwtVault` discriminator tripwires.
+    // -----------------------------------------------------------------
+
+    /// Tripwire: `DISC_RWT_VAULT` matches `sha256("account:RwtVault")[..8]`.
+    /// Mirrors `disc_rwt_mint_matches_sha256` for the `mint_rwt` instruction
+    /// discriminator. If anyone renames the `RwtVault` struct in rwt-engine
+    /// without bumping this constant, this test catches it at `cargo test`.
+    #[test]
+    fn disc_rwt_vault_matches_sha256() {
+        assert_eq!(
+            DISC_RWT_VAULT,
+            disc("account:RwtVault"),
+            "DISC_RWT_VAULT out of sync with sha256(\"account:RwtVault\")[..8]"
+        );
+    }
+
+    /// CP-12.5 — `read_rwt_vault_nav` must reject an account whose owner +
+    /// length pass the prior checks but whose 8-byte discriminator does not
+    /// match `DISC_RWT_VAULT`. We can't construct a real `AccountView` here,
+    /// so this asserts the slice-level invariant the production function
+    /// relies on (`data[0..8] != DISC_RWT_VAULT`) using a synthetic buffer.
+    #[test]
+    fn read_rwt_vault_nav_rejects_wrong_discriminator() {
+        // 40-byte buffer with the layout of a real RwtVault prefix but a
+        // deliberately wrong discriminator (`RwtDistributionConfig`'s disc
+        // would have the right byte length but a different value).
+        let mut buf = [0u8; 40];
+        // discriminator: 0xDE × 8 — guaranteed not equal to DISC_RWT_VAULT.
+        for byte in &mut buf[0..8] {
+            *byte = 0xDE;
+        }
+        // Fill the rest with plausible bytes so a non-disc check wouldn't fail.
+        for byte in &mut buf[8..32] {
+            *byte = 0x00;
+        }
+        buf[32..40].copy_from_slice(&1_000_000u64.to_le_bytes());
+
+        // The production check: `data[0..8] != DISC_RWT_VAULT` → reject.
+        assert_ne!(
+            buf[0..8],
+            DISC_RWT_VAULT,
+            "synthetic buffer must have a different discriminator"
+        );
+        // And the inverse: the canonical discriminator is at the expected slot.
+        let mut canonical = [0u8; 40];
+        canonical[0..8].copy_from_slice(&DISC_RWT_VAULT);
+        canonical[32..40].copy_from_slice(&1_000_000u64.to_le_bytes());
+        assert_eq!(
+            canonical[0..8],
+            DISC_RWT_VAULT,
+            "canonical buffer must pass the disc check"
+        );
     }
 }

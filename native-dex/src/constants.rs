@@ -197,6 +197,12 @@ pub const RWT_VAULT_NAV_OFFSET: usize = 24;
 /// Length of the arlex account discriminator prefix (same as Anchor: 8 bytes).
 pub const RWT_VAULT_DISC_LEN: usize = 8;
 
+/// arlex `#[account]` discriminator for rwt_engine::RwtVault =
+/// sha256("account:RwtVault")[..8]. Mirrored here for defence-in-depth
+/// in `read_rwt_vault_nav`. Tripwire test in `cpi.rs::tests` asserts it
+/// matches the canonical sha256 derivation.
+pub const DISC_RWT_VAULT: [u8; 8] = [0x60, 0x43, 0xda, 0x41, 0x42, 0x7a, 0x0a, 0x11];
+
 // ----- Layer 9 (Liquidity Nexus) -----
 
 /// PDA seed for the singleton `LiquidityNexus` account. One Nexus per DEX
