@@ -12,12 +12,60 @@ pub const POOL_TYPE_STANDARD: u8 = 0;
 pub const POOL_TYPE_CONCENTRATED: u8 = 1;
 
 // Concentrated liquidity
-pub const MAX_BINS: usize = 70;
+//
+// CP-1 Monotonic Ladder rewrite (docs/changelog/2026-04-17-monotonic-ladder.mdx):
+// MAX_BINS was 70 in the legacy pyramid layout; the Monotonic Ladder uses a
+// 1000-bin log-scale BinArray covering ~NAV × 2.7 growth at 0.1% step
+// (~10+ years at 7% APY). StandardCurve pools never read past the active
+// region, so the larger array is rent-only impact for legacy pools.
+pub const MAX_BINS: usize = 1000;
 pub const DEFAULT_BIN_STEP_BPS: u16 = 10;            // 0.1% price step between bins
 pub const MAX_BIN_STEP_BPS: u16 = 500;               // 5% max step — prevents extreme price jumps
+// CP-1 NOTE: `MAX_SHIFT_DISTANCE` is retained for one more commit so the
+// soon-to-be-deleted `shift_liquidity` instruction continues to compile.
+// CP-2 removes both the constant and the instruction in the same sweep.
 pub const MAX_SHIFT_DISTANCE: i32 = 35;              // Max bins from active_bin to nav_bin
 pub const MAX_INITIAL_ACTIVE_BIN: i32 = 10_000;     // Reasonable range for initial_active_bin
 pub const CONCENTRATED_SCALE: u128 = 1_000_000_000_000; // 10^12 for pow_bps
+
+// ----- Monotonic Ladder (CP-1) -----
+//
+// New constants for the log-scale concentrated rewrite. Source:
+// docs/changelog/2026-04-17-monotonic-ladder.mdx and docs/contracts/native-dex.mdx
+// (Monotonic Ladder section). Consumers land in CP-3+; CP-1 only introduces
+// the values so downstream commits can reference them directly.
+
+/// Width (in bins) of the dense active-bid zone where geometric density applies.
+/// docs §1300.
+pub const ACTIVE_ZONE_WIDTH: u16 = 40;
+
+/// Geometric density ratio for the active bid wall, expressed in bps.
+/// `r = 0.85` per docs §1303. Used by `compress_liquidity` / `grow_liquidity`
+/// to compute per-bin USDC weights via geometric series.
+pub const GEOMETRIC_R_BPS: u16 = 8500;
+
+/// Default permanent-tail offset below initial NAV, in bps. docs §51 sets the
+/// upper edge of the permanent tail at `initial_NAV − 1%`.
+pub const DEFAULT_PERMANENT_TAIL_OFFSET_BPS: i32 = 100;
+
+/// Lower bound for the permanent-tail offset (docs:228). Pools may opt to a
+/// tighter floor but never closer than 0.3% to initial NAV.
+pub const MIN_PERMANENT_TAIL_OFFSET_BPS: i32 = 30;
+
+/// Number of bins comprising the immutable permanent-tail USDC reserve
+/// (docs:234). Never shifted, retained across the protocol lifetime.
+pub const PERMANENT_TAIL_BIN_COUNT: i32 = 70;
+
+/// Price offset above NAV at which master-pool USDC→RWT swaps reroute through
+/// `rwt_engine::mint_rwt` instead of consuming organic ask (docs:633 —
+/// `NAV × 1.005`).
+pub const MINT_ROUTE_PRICE_OFFSET_BPS: u16 = 50;
+
+/// USDY mint placeholder — pinned at mainnet via a dedicated mint-pinning
+/// commit (mirrors the existing RWT_MINT MAINNET-REPLACE pattern). Kept as
+/// the zero pubkey until then so on-chain comparisons predictably reject
+/// USDY-paired pools before pinning.
+pub const USDY_MINT: [u8; 32] = [0u8; 32];
 
 // Well-known mints (set per deployment, recompile for new cluster)
 // RWT_MINT = FUQX2AepBoun3hFQjoXcfbX5aGRLxfACx1sAqCC63i5

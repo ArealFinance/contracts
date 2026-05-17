@@ -25,7 +25,7 @@ pub struct DexConfig {
 const _: () = assert!(core::mem::size_of::<DexConfig>() == 167);
 
 // =============================================================================
-// PoolState — 252 bytes (8 discriminator + 244 data)
+// PoolState — 272 bytes (8 discriminator + 264 data)
 // PDA Seed: ["pool", token_a_mint, token_b_mint]
 //
 // Fields `cumulative_fees_per_share_{a,b}` were added by Layer 9 D28
@@ -33,6 +33,13 @@ const _: () = assert!(core::mem::size_of::<DexConfig>() == 167);
 // were never `initialize_dex`-ed (state uninitialized per memory
 // `project_layer1to8_complete.md`), so no on-chain migration is required —
 // every `PoolState` account is created post-D28 with the new fields.
+//
+// CP-1 Monotonic Ladder rewrite (docs/changelog/2026-04-17-monotonic-ladder.mdx
+// §99-102) appends five Monotonic Ladder anchor fields + 2-byte explicit
+// padding for +20 bytes total. StandardCurve pools (`pool_type != 1`) leave
+// these fields at zero (the sentinel), and no Monotonic Ladder code path
+// reads them outside `pool_type == POOL_TYPE_CONCENTRATED`. There is no
+// on-chain migration: master pools are not yet live on mainnet.
 // =============================================================================
 
 #[account]
@@ -61,10 +68,36 @@ pub struct PoolState {
     pub cumulative_fees_per_share_a: u128,      // 16
     /// Layer 9 D28 — cumulative LP-fee per share, side B (Q64.64 fixed-point).
     pub cumulative_fees_per_share_b: u128,      // 16
+    // ----- CP-1 Monotonic Ladder anchors (concentrated pools only) -----
+    //
+    // All five anchors are zero-default for StandardCurve pools. The new
+    // `compress_liquidity` / `grow_liquidity` handlers (CP-4/CP-5) initialise
+    // them at concentrated-pool creation; legacy `shift_liquidity` does not
+    // read them and is removed in CP-2.
+    /// Leftmost bin currently bracketed by the Monotonic Ladder (active
+    /// extended bid edge). Initialised by `create_concentrated_pool`,
+    /// advanced by `compress_liquidity`.
+    pub left_anchor_bin: i32,                   // 4
+    /// Upper edge of the permanent-tail USDC reserve. Frozen for the
+    /// lifetime of the pool — never advanced by Rebalancer (docs §51).
+    pub permanent_tail_floor_bin: i32,          // 4
+    /// NAV bin at the time of the most recent rebalance. Used by
+    /// `grow_liquidity` to assert monotonicity of growth.
+    pub last_rebalance_nav_bin: i32,            // 4
+    /// Lower edge of the dense active bid zone (`ACTIVE_ZONE_WIDTH` bins
+    /// below `active_bin_id`).
+    pub active_zone_lower: i32,                 // 4
+    /// Configured permanent-tail offset below initial NAV, in bps. Bounded by
+    /// `[MIN_PERMANENT_TAIL_OFFSET_BPS, DEFAULT_PERMANENT_TAIL_OFFSET_BPS]`.
+    pub permanent_tail_offset_bps: u16,         // 2
+    /// Explicit padding to keep the appended block at +20 B and leave a
+    /// well-defined slot for future Monotonic Ladder anchors without
+    /// requiring another size assert reflow.
+    pub _pad_monotonic: [u8; 2],                // 2
 }
-// SIZE = 244, SPACE = 8 + 244 = 252
+// SIZE = 264, SPACE = 8 + 264 = 272
 
-const _: () = assert!(core::mem::size_of::<PoolState>() == 244);
+const _: () = assert!(core::mem::size_of::<PoolState>() == 264);
 
 // =============================================================================
 // PoolCreators — 362 bytes (8 discriminator + 354 data)
@@ -126,22 +159,29 @@ pub struct Bin {
 const _: () = assert!(core::mem::size_of::<Bin>() == 16);
 
 // =============================================================================
-// BinArray — 1171 bytes (8 discriminator + 1163 data)
+// BinArray — 16_051 bytes (8 discriminator + 16_043 data)
 // PDA Seed: ["bins", pool_state]
+//
+// CP-1 Monotonic Ladder rewrite (docs/changelog/2026-04-17-monotonic-ladder.mdx
+// §50): MAX_BINS grew 70 → 1000 to host the log-scale ladder. The 16 KB
+// account fits comfortably inside the Solana 10 MB account-size ceiling and
+// costs ~0.11 SOL of rent per master pool. Concentrated bin-walk swap math
+// (concentrated.rs) is bounds-checked against `MAX_BINS` symbolically so it
+// scales without code changes.
 // =============================================================================
 
 #[account]
 pub struct BinArray {
     pub pool: [u8; 32],                          // 32
-    pub bins: [Bin; crate::constants::MAX_BINS], // 1120 (70 × 16)
+    pub bins: [Bin; crate::constants::MAX_BINS], // 16_000 (1000 × 16)
     pub lower_bin_id: i32,                       // 4
     pub bin_step_bps: u16,                       // 2
     pub active_bin_id: i32,                      // 4
     pub bump: u8,                                // 1
 }
-// SIZE = 1163, SPACE = 8 + 1163 = 1171
+// SIZE = 16_043, SPACE = 8 + 16_043 = 16_051
 
-const _: () = assert!(core::mem::size_of::<BinArray>() == 1163);
+const _: () = assert!(core::mem::size_of::<BinArray>() == 16_043);
 
 // =============================================================================
 // LiquidityNexus — 58 bytes (8 discriminator + 50 data)
@@ -231,14 +271,66 @@ mod tests {
     // migration footprint witness) and confirm zero-default semantics.
     // -------------------------------------------------------------------
 
-    /// D28 — PoolState size now includes 32 bytes of LP-fee accumulator.
-    /// Pre-D28 size was 212 bytes; post-D28 size is 244 bytes (212 + 16 + 16).
-    /// Catches drift if the accumulator fields are reordered/resized or if a
-    /// future change tries to drop them without going through state migration.
+    /// D28 + CP-1 — PoolState size includes 32 bytes of LP-fee accumulator
+    /// plus 20 bytes of Monotonic Ladder anchors. Pre-D28 size was 212 bytes;
+    /// post-D28 was 244 bytes (212 + 16 + 16); post-CP-1 is 264 bytes
+    /// (244 + 4 + 4 + 4 + 4 + 2 + 2). Catches drift if any of these field
+    /// groups are reordered, resized, or dropped without going through state
+    /// migration.
     #[test]
     fn pool_state_size_includes_lp_fee_accumulators() {
-        assert_eq!(core::mem::size_of::<PoolState>(), 244);
-        assert_eq!(PoolState::SPACE, 252);
+        assert_eq!(core::mem::size_of::<PoolState>(), 264);
+        assert_eq!(PoolState::SPACE, 272);
+    }
+
+    /// CP-1 — explicit witness that the Monotonic Ladder additions are the
+    /// only delta from the post-D28 baseline (244 B). Splitting this out
+    /// from the umbrella assertion above makes a future review obvious if
+    /// anyone tries to land a "side-channel" struct change.
+    #[test]
+    fn pool_state_size_grew_by_20_bytes() {
+        const POST_D28_SIZE: usize = 244;
+        const CP1_DELTA: usize = 20; // 4 + 4 + 4 + 4 + 2 + 2
+        assert_eq!(core::mem::size_of::<PoolState>(), POST_D28_SIZE + CP1_DELTA);
+    }
+
+    /// CP-1 — zero-default sentinel pin: every Monotonic Ladder anchor on a
+    /// freshly-zeroed PoolState reads as 0. StandardCurve pools rely on this
+    /// (they are never touched by `grow_liquidity` / `compress_liquidity` and
+    /// must continue to validate against the zero sentinel without explicit
+    /// init). Zero-fill is a valid bit pattern for `i32`, `u16`, and `[u8;2]`.
+    #[test]
+    fn pool_state_default_zeroes_monotonic_fields() {
+        // SAFETY: PoolState is `#[repr(C, packed)]` via #[account] and sums
+        // to 264 bytes with no padding. All-zero is a valid bit pattern for
+        // every field type used here.
+        let buf = [0u8; core::mem::size_of::<PoolState>()];
+        let pool: PoolState = unsafe { core::ptr::read(buf.as_ptr() as *const PoolState) };
+        assert_eq!({ pool.left_anchor_bin }, 0i32);
+        assert_eq!({ pool.permanent_tail_floor_bin }, 0i32);
+        assert_eq!({ pool.last_rebalance_nav_bin }, 0i32);
+        assert_eq!({ pool.active_zone_lower }, 0i32);
+        assert_eq!({ pool.permanent_tail_offset_bps }, 0u16);
+        assert_eq!({ pool._pad_monotonic }, [0u8; 2]);
+    }
+
+    /// CP-1 — pin BinArray repr-C layout at 16_043 bytes (32 + 1000 × 16 +
+    /// 4 + 2 + 4 + 1). Catches drift if MAX_BINS, the Bin struct, or any of
+    /// the trailing scalar fields are touched without a state migration plan.
+    #[test]
+    fn bin_array_size_matches_repr_c() {
+        assert_eq!(core::mem::size_of::<BinArray>(), 16_043);
+        assert_eq!(BinArray::SPACE, 16_051);
+    }
+
+    /// CP-1 — sanity pin for MAX_BINS itself. Bin-walk swap and bin
+    /// distribution math everywhere in `concentrated.rs` is bounded by
+    /// MAX_BINS symbolically, but having the literal value asserted catches
+    /// an accidental edit that compiles but breaks Monotonic Ladder
+    /// dimensioning.
+    #[test]
+    fn bin_array_max_bins_is_1000() {
+        assert_eq!(crate::constants::MAX_BINS, 1000);
     }
 
     /// D28 — newly-created PoolState accounts must default-init both
