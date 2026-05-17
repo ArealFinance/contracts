@@ -111,14 +111,22 @@ pub mod native_dex {
         crate::instructions::create_pool::handler(ctx)
     }
 
-    /// Create a concentrated liquidity pool with BinArray.
+    /// Create a Monotonic Ladder master pool (concentrated liquidity).
+    /// CP-4: `permanent_tail_offset_bps` parameterises the immutable
+    /// permanent-tail position below initial NAV (docs §215 / §233).
     #[inline(never)]
     pub fn create_concentrated_pool(
         ctx: Context<CreateConcentratedPool>,
         bin_step_bps: u16,
         initial_active_bin: i32,
+        permanent_tail_offset_bps: i32,
     ) -> Result<()> {
-        crate::instructions::create_concentrated_pool::handler(ctx, bin_step_bps, initial_active_bin)
+        crate::instructions::create_concentrated_pool::handler(
+            ctx,
+            bin_step_bps,
+            initial_active_bin,
+            permanent_tail_offset_bps,
+        )
     }
 
     /// Add liquidity to a pool. Receive LP shares proportional to deposit.

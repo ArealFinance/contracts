@@ -118,4 +118,11 @@ pub enum DexError {
     ActiveZoneOverlapsTail,
     #[msg("new_nav_bin too close to the BinArray upper edge — exceeds right-edge buffer")]
     ExceedsRightEdgeBuffer,
+    // ----- CP-4 create_concentrated_pool (Monotonic Ladder init) -----
+    #[msg("Non-RWT side of master pool must be USDC_MINT or USDY_MINT")]
+    InvalidMintPair,
+    #[msg("permanent_tail_offset_bps must be in [MIN_PERMANENT_TAIL_OFFSET_BPS, +∞)")]
+    InvalidPermanentTailOffset,
+    #[msg("Master pools cannot carry OT-treasury accounts")]
+    OtTreasuryNotAllowedOnMasterPool,
 }
