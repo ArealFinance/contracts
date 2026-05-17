@@ -41,6 +41,11 @@ pub fn handler(
     // areal_fee_destination and pause_authority remain immutable
     config.base_fee_bps = base_fee_bps;
     config.lp_fee_share_bps = lp_fee_share_bps;
+    // CP-12.5: Setting rebalancer to REBALANCER_KILL_SWITCH ([0u8;32]) is
+    // permitted by design — the cryptographic impossibility of signing for
+    // the zero pubkey freezes grow_liquidity / compress_liquidity until
+    // the authority restores a real Rebalancer. Symmetric with
+    // LiquidityNexus.manager kill-switch.
     config.rebalancer = rebalancer;
     config.is_active = is_active;
 

@@ -235,6 +235,13 @@ pub const NEXUS_HOSTING_PROGRAM_ID: [u8; 32] = [
 /// setting the manager to this value — that is the on-chain kill-switch.
 pub const NEXUS_MANAGER_KILL_SWITCH: [u8; 32] = [0u8; 32];
 
+/// Rebalancer kill-switch sentinel (zero pubkey). Per CP-12.5, setting
+/// `DexConfig.rebalancer` to this value freezes `grow_liquidity` and
+/// `compress_liquidity` — no signer can produce a signature for [0u8;32].
+/// Symmetric with NEXUS_MANAGER_KILL_SWITCH. `update_dex_config` permits
+/// this value by design (incident-response lever).
+pub const REBALANCER_KILL_SWITCH: [u8; 32] = [0u8; 32];
+
 /// Token-kind tags used by `nexus_deposit` / `nexus_record_deposit` /
 /// `nexus_withdraw_profits` to disambiguate the principal counter to bump
 /// or read. Layer 9 §4.2 / §4.6 / §4.9.
