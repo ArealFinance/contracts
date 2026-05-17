@@ -95,6 +95,19 @@ pub fn handler(
     amount_b: u64,
     min_shares: u128,
 ) -> Result<()> {
+    // CP-5 — Master (Monotonic Ladder) pools reject user LP entirely
+    // (see `add_liquidity::handler` for the architectural rationale).
+    // The check lives at the user-signed entrypoint, NOT inside
+    // `zap_liquidity_internal`, mirroring the structure used by
+    // `add_liquidity::handler`. This keeps the shared internal helper
+    // free to service a future PDA-signed caller (no such caller
+    // exists today, but the parity makes the rejection surface
+    // entrypoint-scoped and easy to reason about).
+    {
+        let pool = PoolState::load(ctx.accounts.pool_state, ctx.program_id)?;
+        crate::instructions::add_liquidity::enforce_user_lp_allowed(pool.pool_type)?;
+    }
+
     zap_liquidity_internal(
         &ctx.accounts.view(),
         ctx.remaining_accounts,
@@ -139,11 +152,15 @@ pub(crate) fn zap_liquidity_internal<'info>(
     if !pool.is_active {
         return Err(ProgramError::from(DexError::PoolNotActive));
     }
-    // SECURITY: Reject concentrated pools — zap uses constant_product internally,
-    // which is incorrect for bin-based pools. Use add_liquidity for concentrated.
-    if pool.pool_type == crate::constants::POOL_TYPE_CONCENTRATED {
-        return Err(ProgramError::from(DexError::InvalidPoolType));
-    }
+    // CP-5 — Master-pool user-LP rejection lives at the user-signed
+    // entrypoints (`add_liquidity::handler`, `zap_liquidity::handler`)
+    // via `enforce_user_lp_allowed`, NOT here. This shared helper is
+    // kept entry-agnostic so a future PDA-signed caller can reuse it
+    // without tripping the master-pool guard. Prior to CP-5 this branch
+    // raised `InvalidPoolType` (zap had no bin-aware path); the typed
+    // rejection now lives in `zap_liquidity::handler` per
+    // docs/changelog/2026-04-17-monotonic-ladder.mdx:97 and
+    // docs/contracts/native-dex.mdx §83.
     if amount_a == 0 && amount_b == 0 {
         return Err(ProgramError::from(DexError::ZeroAmount));
     }
@@ -1297,5 +1314,47 @@ mod tests {
         // Non-RWT side (A) has no fee accumulator activity.
         reserve_a_after += amount_a; // deposit leg adds amount_a to reserve_a
         let _ = reserve_a_after; // pin reserve_a path is symmetric and uneventful
+    }
+
+    // ----- CP-5 MasterPoolUserLpDisabled guard ---------------------------
+
+    /// Decode `ProgramError::Custom` into the inner u32 so tests can match
+    /// against `DexError` discriminants without depending on the exact
+    /// numeric base.
+    fn custom_code(err: arlex_lang::prelude::ProgramError) -> u32 {
+        match err {
+            arlex_lang::prelude::ProgramError::Custom(code) => code,
+            other => panic!("expected ProgramError::Custom, got {:?}", other),
+        }
+    }
+
+    fn code_of(err: DexError) -> u32 {
+        custom_code(arlex_lang::prelude::ProgramError::from(err))
+    }
+
+    /// CP-5 — `zap_liquidity` MUST reject master (Monotonic Ladder)
+    /// pools with `MasterPoolUserLpDisabled`. Same surface as
+    /// `add_liquidity`: master pools have no user-LP path, only
+    /// Nexus and the Pool Rebalancer.
+    /// Pinned via the shared `enforce_user_lp_allowed` helper so a
+    /// refactor of either handler cannot drift their rejection codes
+    /// out of sync.
+    #[test]
+    fn rejects_master_pool_zap_liquidity() {
+        let err =
+            crate::instructions::add_liquidity::enforce_user_lp_allowed(POOL_TYPE_CONCENTRATED)
+                .unwrap_err();
+        assert_eq!(custom_code(err), code_of(DexError::MasterPoolUserLpDisabled));
+    }
+
+    /// CP-5 — StandardCurve pools still accept user zap-liquidity. Sanity
+    /// that the guard doesn't accidentally widen its rejection to the
+    /// non-master path.
+    #[test]
+    fn accepts_standard_curve_zap_liquidity() {
+        assert!(
+            crate::instructions::add_liquidity::enforce_user_lp_allowed(POOL_TYPE_STANDARD)
+                .is_ok()
+        );
     }
 }

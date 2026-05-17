@@ -20,7 +20,7 @@ use arlex_lang::prelude::*;
 
 use crate::constants::*;
 use crate::error::DexError;
-use crate::state::LiquidityNexus;
+use crate::state::{LiquidityNexus, PoolState};
 use crate::validation::*;
 use crate::instructions::add_liquidity::{add_liquidity_internal, AddLiquidityAccountsView};
 
@@ -130,6 +130,24 @@ pub fn handler(
         assert_manager(nexus, ctx.accounts.manager)?;
         nexus.bump
     };
+
+    // CP-5 — Nexus only deposits into master (Monotonic Ladder) pools.
+    // StandardCurve pools are user-LP territory (`add_liquidity` /
+    // `zap_liquidity`); routing Nexus liquidity into a StandardCurve
+    // pool would mix Nexus principal accounting with user-LP share
+    // mints, which the on-chain invariants do not model.
+    // Symmetric to the `MasterPoolUserLpDisabled` guards on
+    // `add_liquidity` / `zap_liquidity` (see
+    // docs/changelog/2026-04-17-monotonic-ladder.mdx:97 and
+    // docs/contracts/native-dex.mdx §83). The check is scoped so the
+    // `pool_state` mut handle is released before `add_liquidity_internal`
+    // re-loads it.
+    {
+        let pool = PoolState::load(ctx.accounts.pool_state, ctx.program_id)?;
+        if pool.pool_type != POOL_TYPE_CONCENTRATED {
+            return Err(ProgramError::from(DexError::InvalidPoolType));
+        }
+    }
 
     // 2. Build Nexus PDA signer seeds. The inbound transfers
     //    `nexus_token_<side>` → `vault_<side>` sign with these via
@@ -339,5 +357,40 @@ mod tests {
             .unwrap();
         assert_eq!(compute_claimable(delta_a2, nexus_lp.shares).unwrap(), 0u64);
         assert_eq!(compute_claimable(delta_b2, nexus_lp.shares).unwrap(), 0u64);
+    }
+
+    // ----- CP-5 master-pool-only Nexus gate ------------------------------
+
+    /// Inverse of `enforce_user_lp_allowed`: Nexus deposits accept ONLY
+    /// master (Monotonic Ladder) pools. Mirrors the guard inside
+    /// `handler` so the rejection surface is unit-testable without
+    /// fabricating PDA-backed `AccountView`s.
+    fn enforce_nexus_pool_type(pool_type: u8) -> core::result::Result<(), arlex_lang::prelude::ProgramError> {
+        if pool_type != crate::constants::POOL_TYPE_CONCENTRATED {
+            return Err(arlex_lang::prelude::ProgramError::from(
+                DexError::InvalidPoolType,
+            ));
+        }
+        Ok(())
+    }
+
+    /// CP-5 — Nexus must reject StandardCurve deposits. Routing Nexus
+    /// liquidity into a StandardCurve pool would mix Nexus principal
+    /// accounting with user-LP share mints, which the on-chain
+    /// invariants do not model. Symmetric to the
+    /// `MasterPoolUserLpDisabled` guards on user-LP entrypoints.
+    #[test]
+    fn rejects_standard_curve_nexus_add() {
+        let err = enforce_nexus_pool_type(crate::constants::POOL_TYPE_STANDARD).unwrap_err();
+        assert_eq!(custom_code(err), code_of(DexError::InvalidPoolType));
+    }
+
+    /// CP-5 — Nexus accepts Concentrated (master / Monotonic Ladder)
+    /// pools. This sanity-pin guarantees the gate is not over-broad and
+    /// preserves the Nexus's role as the singleton bid-side deposit
+    /// surface.
+    #[test]
+    fn accepts_concentrated_nexus_add() {
+        assert!(enforce_nexus_pool_type(crate::constants::POOL_TYPE_CONCENTRATED).is_ok());
     }
 }

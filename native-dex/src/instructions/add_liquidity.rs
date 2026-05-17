@@ -4,11 +4,10 @@ use pinocchio::sysvars::{Sysvar, clock::Clock};
 use crate::constants::*;
 use crate::error::DexError;
 use crate::events::{LiquidityAdded, LpFeesClaimed};
-use crate::state::{DexConfig, PoolState, LpPosition, BinArray};
+use crate::state::{DexConfig, PoolState, LpPosition};
 use crate::amm::calculate_lp_shares;
 use crate::instructions::claim_lp_fees::compute_claimable;
 use crate::validation::*;
-use crate::concentrated;
 
 #[derive(Accounts)]
 pub struct AddLiquidity<'info> {
@@ -90,6 +89,23 @@ pub fn handler(
     amount_b: u64,
     min_shares: u128,
 ) -> Result<()> {
+    // CP-5 — Master (Monotonic Ladder) pools reject user LP entirely.
+    // The active bid wall is sized by the Pool Rebalancer (CP-7
+    // grow_liquidity / compress_liquidity); the Liquidity Nexus is the
+    // only liquidity source on the bid side.
+    // See docs/changelog/2026-04-17-monotonic-ladder.mdx:97 and
+    // docs/contracts/native-dex.mdx §83.
+    //
+    // The check lives at the user-signed entrypoint (NOT inside
+    // `add_liquidity_internal`) so the shared internal helper remains
+    // reachable from `nexus_add_liquidity`, which is the SOLE callsite
+    // permitted to deposit into master pools and runs through
+    // `add_liquidity_internal` with the Nexus PDA as `authority`.
+    {
+        let pool = PoolState::load(ctx.accounts.pool_state, ctx.program_id)?;
+        enforce_user_lp_allowed(pool.pool_type)?;
+    }
+
     add_liquidity_internal(
         &ctx.accounts.view(),
         ctx.remaining_accounts,
@@ -99,6 +115,25 @@ pub fn handler(
         min_shares,
         None,
     )
+}
+
+/// CP-5 — guard helper enforcing the rule that master (Monotonic
+/// Ladder) pools reject user LP. Used by user-signed `add_liquidity`
+/// and `zap_liquidity` so the rejection surface is identical and
+/// unit-testable without fabricating PDA-backed `AccountView`s.
+///
+/// Deliberately NOT called from `add_liquidity_internal` because that
+/// shared helper also services `nexus_add_liquidity`, which IS allowed
+/// to deposit into master pools (and would otherwise be blocked here).
+///
+/// See docs/changelog/2026-04-17-monotonic-ladder.mdx:97 and
+/// docs/contracts/native-dex.mdx §83 for the architectural rationale.
+#[inline]
+pub(crate) fn enforce_user_lp_allowed(pool_type: u8) -> Result<()> {
+    if pool_type == POOL_TYPE_CONCENTRATED {
+        return Err(ProgramError::from(DexError::MasterPoolUserLpDisabled));
+    }
+    Ok(())
 }
 
 /// Layer 10 R46 — auto-claim outbound LP-fee transfers extracted into a
@@ -240,6 +275,12 @@ pub(crate) fn add_liquidity_internal<'info>(
     if !pool.is_active {
         return Err(ProgramError::from(DexError::PoolNotActive));
     }
+    // CP-5 — Master-pool user-LP rejection lives at the user-signed
+    // entrypoints (`add_liquidity::handler`, `zap_liquidity::handler`)
+    // via `enforce_user_lp_allowed`, NOT here. This shared helper also
+    // services `nexus_add_liquidity`, which IS allowed to deposit into
+    // master pools — gating the entire helper would block the Nexus
+    // path and break the Monotonic Ladder bid surface.
     if amount_a == 0 || amount_b == 0 {
         return Err(ProgramError::from(DexError::ZeroAmount));
     }
@@ -296,28 +337,10 @@ pub(crate) fn add_liquidity_internal<'info>(
         return Err(ProgramError::from(DexError::SlippageExceeded));
     }
 
-    // --- Distribute to bins for concentrated pools ---
-    if pool.pool_type == POOL_TYPE_CONCENTRATED {
-        // BinArray passed as last remaining_account
-        let bin_account_idx = remaining_accounts.len().checked_sub(1)
-            .ok_or(ProgramError::from(DexError::InvalidBinRange))?;
-        // Verify BinArray PDA derivation
-        let pool_key_for_bin = pubkey_bytes(accounts.pool_state);
-        let (expected_bin_pda, _) = arlex_lang::find_program_address(
-            &[b"bins", pool_key_for_bin.as_ref()],
-            program_id,
-        );
-        if remaining_accounts[bin_account_idx].address().as_ref() != expected_bin_pda.as_ref() {
-            return Err(ProgramError::InvalidSeeds);
-        }
-        let bin_array = BinArray::load_mut(&remaining_accounts[bin_account_idx], program_id)?;
-        concentrated::distribute_to_bins(
-            bin_array,
-            deposit_a,
-            deposit_b,
-            is_first,
-        )?;
-    }
+    // CP-5 — concentrated bin distribution removed. `pool.pool_type ==
+    // POOL_TYPE_CONCENTRATED` is rejected up-front by the
+    // `MasterPoolUserLpDisabled` guard above; only StandardCurve pools
+    // ever reach this point, so there is no bin-side bookkeeping to do.
 
     // --- Effects: update pool state BEFORE CPIs ---
     pool.reserve_a = pool.reserve_a.checked_add(deposit_a)
@@ -621,5 +644,43 @@ mod tests {
         assert_eq!(delta_b2, 0u128);
         assert_eq!(compute_claimable(delta_a2, lp.shares).unwrap(), 0u64);
         assert_eq!(compute_claimable(delta_b2, lp.shares).unwrap(), 0u64);
+    }
+
+    // ----- CP-5 MasterPoolUserLpDisabled guard ---------------------------
+
+    /// Decode `ProgramError::Custom` into the inner u32 so tests can match
+    /// against `DexError` discriminants without depending on the exact
+    /// numeric base.
+    fn custom_code(err: ProgramError) -> u32 {
+        match err {
+            ProgramError::Custom(code) => code,
+            other => panic!("expected ProgramError::Custom, got {:?}", other),
+        }
+    }
+
+    fn code_of(err: DexError) -> u32 {
+        custom_code(ProgramError::from(err))
+    }
+
+    /// CP-5 — `add_liquidity` MUST reject master (Monotonic Ladder)
+    /// pools with `MasterPoolUserLpDisabled`. The user-LP surface is
+    /// disabled by design; the only liquidity sources are Nexus
+    /// (`nexus_add_liquidity`) and the Pool Rebalancer
+    /// (`grow_liquidity` / `compress_liquidity`).
+    /// Pinned via the shared guard helper so refactors cannot drift
+    /// the rejection surface between `add_liquidity_internal` and
+    /// `zap_liquidity_internal`.
+    #[test]
+    fn rejects_master_pool_add_liquidity() {
+        let err = enforce_user_lp_allowed(POOL_TYPE_CONCENTRATED).unwrap_err();
+        assert_eq!(custom_code(err), code_of(DexError::MasterPoolUserLpDisabled));
+    }
+
+    /// CP-5 — StandardCurve pools still accept user LP. Sanity that
+    /// the guard doesn't accidentally widen its rejection to the
+    /// non-master path.
+    #[test]
+    fn accepts_standard_curve_add_liquidity() {
+        assert!(enforce_user_lp_allowed(POOL_TYPE_STANDARD).is_ok());
     }
 }

@@ -125,4 +125,7 @@ pub enum DexError {
     InvalidPermanentTailOffset,
     #[msg("Master pools cannot carry OT-treasury accounts")]
     OtTreasuryNotAllowedOnMasterPool,
+    // ----- CP-5 Monotonic Ladder user-LP guards -----
+    #[msg("Master (Monotonic Ladder) pools reject user LP — liquidity enters only via Nexus")]
+    MasterPoolUserLpDisabled,
 }
