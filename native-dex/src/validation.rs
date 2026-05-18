@@ -74,6 +74,46 @@ pub fn token_a_is_rwt(token_a_mint: &[u8; 32], token_b_mint: &[u8; 32]) -> core:
     }
 }
 
+/// CP-4 / CP-6 — Master pool counterparty (non-RWT side) mint gate.
+///
+/// Master Monotonic-Ladder pools (USDC/RWT, USDY/RWT) require the non-RWT
+/// side to be exactly `USDC_MINT` or `USDY_MINT`. The geometry / mint
+/// routing is defined only for those two pairs.
+///
+/// **Placeholder mode** (test-validator / pre-mainnet): when both
+/// `USDC_MINT` and `USDY_MINT` are the all-zero sentinel (MAINNET-REPLACE
+/// pattern), we cannot validate against unpinned constants. Accept any
+/// non-zero, non-RWT mint as a valid counterparty. Mainnet pinning
+/// activates the strict gate without any further code changes — the
+/// moment either constant is non-zero, the strict equality branch fires.
+///
+/// Shared between `create_concentrated_pool::handler` (pool creation gate)
+/// and `swap_internal` (mint-route gate) so the two predicates cannot
+/// drift: a pool that passes creation MUST also pass the swap-time gate
+/// (and vice versa), otherwise mint-route routing silently degrades to
+/// bin-walk on test-validator and the `bin_walk_swap` empty-bins revert
+/// surfaces (smoke-3, 2026-05-18).
+///
+/// Returns `true` iff `non_rwt_mint` is an accepted master-pool counterparty.
+pub fn is_master_pool_counterparty_mint(non_rwt_mint: &[u8; 32]) -> bool {
+    use crate::constants::{USDC_MINT, USDY_MINT};
+    const ZERO_MINT: [u8; 32] = [0; 32];
+    let usdc_pinned = USDC_MINT != ZERO_MINT;
+    let usdy_pinned = USDY_MINT != ZERO_MINT;
+    if usdc_pinned || usdy_pinned {
+        let matches_usdc = usdc_pinned && non_rwt_mint == &USDC_MINT;
+        let matches_usdy = usdy_pinned && non_rwt_mint == &USDY_MINT;
+        matches_usdc || matches_usdy
+    } else {
+        // Placeholder mode (test-validator) — any non-RWT mint accepted,
+        // except the all-zero sentinel itself (defensive: a runtime mint
+        // is never zero; a zero `mint_b` would also fail upstream account
+        // ownership checks, but rejecting it here keeps the gate's truth
+        // table closed).
+        non_rwt_mint != &ZERO_MINT
+    }
+}
+
 /// Verify Manager-gated access to Layer 9 Nexus instructions (single source of
 /// truth, D22). Used by `nexus_swap`, `nexus_add_liquidity`,
 /// `nexus_remove_liquidity` (future Layer 9 work). NOT used by `nexus_claim_rewards`

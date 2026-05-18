@@ -29,7 +29,7 @@ use crate::pool_creation::{
     require_whitelisted_creator,
 };
 use crate::state::*;
-use crate::validation::{is_rwt_mint, pubkey_bytes};
+use crate::validation::{is_master_pool_counterparty_mint, is_rwt_mint, pubkey_bytes};
 
 #[derive(Accounts)]
 pub struct CreateConcentratedPool<'info> {
@@ -126,16 +126,15 @@ pub fn handler(
     // any non-RWT mint. Mainnet pinning activates the strict gate without
     // any further code changes: as soon as either side is non-zero, the
     // strict equality check fires on that side.
+    //
+    // The placeholder bypass + strict gate decision lives in
+    // `is_master_pool_counterparty_mint` so the swap-time mint-route gate
+    // can apply the IDENTICAL predicate (smoke-3 root cause, 2026-05-18 —
+    // gate drift between creation and swap caused on-chain bin-walk fallback
+    // when the off-chain quote expected mint-route).
     let non_rwt_mint = if is_rwt_mint(&mint_a) { &mint_b } else { &mint_a };
-    const ZERO_MINT: [u8; 32] = [0; 32];
-    let usdc_pinned = USDC_MINT != ZERO_MINT;
-    let usdy_pinned = USDY_MINT != ZERO_MINT;
-    if usdc_pinned || usdy_pinned {
-        let matches_usdc = usdc_pinned && non_rwt_mint == &USDC_MINT;
-        let matches_usdy = usdy_pinned && non_rwt_mint == &USDY_MINT;
-        if !matches_usdc && !matches_usdy {
-            return Err(ProgramError::from(DexError::InvalidMintPair));
-        }
+    if !is_master_pool_counterparty_mint(non_rwt_mint) {
+        return Err(ProgramError::from(DexError::InvalidMintPair));
     }
 
     // CP-4 — Master pools never carry an OT-treasury (docs §229: "OT

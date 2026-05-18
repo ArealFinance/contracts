@@ -238,16 +238,31 @@ pub(crate) fn swap_internal<'info>(
     // `!input_is_rwt`, the input mint is the non-RWT side (the user is
     // buying RWT with USDC / USDY). Use that to decide if the pair is a
     // master pool (non-RWT side ∈ {USDC, USDY}).
-    let non_rwt_mint_for_route: [u8; 32] = if a_to_b {
-        // input is token_a; if input_is_rwt then a is RWT (and we won't
-        // route in that case); otherwise a is the non-RWT side.
-        pool.token_a_mint
-    } else {
+    // The non-RWT side: when `input_is_rwt` is false, the input side is
+    // non-RWT — but for the master-pool gate we want the COUNTERPARTY mint
+    // (the side that is NOT RWT). That is the non-RWT side regardless of
+    // direction, because exactly one of the two pool mints is RWT.
+    let non_rwt_mint_for_route: [u8; 32] = if is_rwt_mint(&pool.token_a_mint) {
         pool.token_b_mint
+    } else {
+        pool.token_a_mint
     };
+    // 2026-05-18 smoke-3 fix: the previous gate predicate
+    //   `non_rwt_mint_for_route == USDC_MINT || non_rwt_mint_for_route == USDY_MINT`
+    // degenerated on test-validator to `non_rwt_mint == [0; 32]` (because
+    // both `USDC_MINT` and `USDY_MINT` are zero placeholders pre-mainnet),
+    // which is never true for a runtime-generated USDC mint. The mint-route
+    // branch was therefore unreachable on test-validator and USDC→RWT swaps
+    // fell through to `bin_walk_swap` which reverted with empty-bins.
+    //
+    // The placeholder bypass + strict gate decision is now shared with
+    // `create_concentrated_pool::handler` via
+    // `is_master_pool_counterparty_mint`, so the creation gate and the
+    // swap-time gate cannot drift. Mainnet pinning activates the strict
+    // equality check on both sites simultaneously.
     let is_master_pool_usdc_to_rwt = pool.pool_type == POOL_TYPE_CONCENTRATED
         && !input_is_rwt
-        && (non_rwt_mint_for_route == USDC_MINT || non_rwt_mint_for_route == USDY_MINT);
+        && is_master_pool_counterparty_mint(&non_rwt_mint_for_route);
 
     if is_master_pool_usdc_to_rwt {
         // Load the bin_array slot (always present for concentrated pools).
@@ -1087,37 +1102,46 @@ mod tests {
     /// (4) `master_rwt_to_usdc_never_routes_to_mint` — pinned by the outer
     /// `is_master_pool_usdc_to_rwt` gate (`!input_is_rwt`). The gate predicate
     /// is exercised against fabricated `(input_is_rwt, pool_type, non_rwt_mint)`
-    /// tuples here, mirroring the handler's branch decision.
+    /// tuples here, mirroring the handler's branch decision via the shared
+    /// `is_master_pool_counterparty_mint` predicate.
     #[test]
     fn master_rwt_to_usdc_never_routes_to_mint() {
-        // Mirror the production gate's boolean expression:
+        // Mirror the production gate's boolean expression (post smoke-3
+        // refactor, 2026-05-18):
         //   is_master_pool_usdc_to_rwt =
         //     pool.pool_type == POOL_TYPE_CONCENTRATED
         //     && !input_is_rwt
-        //     && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT)
+        //     && is_master_pool_counterparty_mint(&non_rwt_mint)
         let pool_type: u8 = POOL_TYPE_CONCENTRATED;
         let input_is_rwt = true; // a_to_b sell-RWT direction (RWT → USDC)
-        let non_rwt_mint = USDC_MINT;
+        let non_rwt_mint = [0xAAu8; 32]; // any non-RWT mint
         let is_master = pool_type == POOL_TYPE_CONCENTRATED
             && !input_is_rwt
-            && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT);
+            && is_master_pool_counterparty_mint(&non_rwt_mint);
         assert!(!is_master, "RWT→USDC direction must never trigger mint-route gate");
     }
 
-    /// (5) Non-master concentrated pool (non-USDC, non-USDY pair) → never routes.
-    /// This is a defence-in-depth assertion: CP-4 already enforces that
-    /// concentrated pools only get created with USDC/USDY non-RWT sides,
-    /// but the swap-time gate must also refuse for any hypothetical pool
-    /// that slipped through (e.g. legacy state from before CP-4).
+    /// (5) Non-master concentrated pool — meaning here is "the non-RWT side
+    /// is the zero sentinel". The shared `is_master_pool_counterparty_mint`
+    /// helper rejects the zero sentinel even in placeholder mode (defensive
+    /// truth-table closure), so the gate refuses.
+    ///
+    /// Pre-2026-05-18 this test asserted that `[0xFF; 32]` was rejected
+    /// because the placeholder-mode bypass did not exist on the swap side.
+    /// Post-fix the bypass is shared with `create_concentrated_pool`, so
+    /// any non-zero non-RWT mint is accepted in placeholder mode — see
+    /// `master_usdc_to_rwt_placeholder_mode_accepts_any_non_rwt` below for
+    /// the new behaviour. The zero-sentinel rejection remains as a
+    /// defensive closure of the truth table.
     #[test]
-    fn non_master_concentrated_never_routes_to_mint() {
+    fn non_master_concentrated_zero_sentinel_never_routes_to_mint() {
         let pool_type = POOL_TYPE_CONCENTRATED;
         let input_is_rwt = false;
-        let non_rwt_mint = [0xFFu8; 32]; // arbitrary non-USDC, non-USDY mint
+        let non_rwt_mint = [0u8; 32]; // zero sentinel — rejected by the helper
         let is_master = pool_type == POOL_TYPE_CONCENTRATED
             && !input_is_rwt
-            && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT);
-        assert!(!is_master, "non-USDC/USDY concentrated pool must skip mint-route");
+            && is_master_pool_counterparty_mint(&non_rwt_mint);
+        assert!(!is_master, "zero-sentinel non-RWT mint must skip mint-route");
     }
 
     /// (6) StandardCurve pools never route to mint.
@@ -1125,11 +1149,122 @@ mod tests {
     fn standard_curve_never_routes_to_mint() {
         let pool_type = POOL_TYPE_STANDARD;
         let input_is_rwt = false;
-        let non_rwt_mint = USDC_MINT;
+        let non_rwt_mint = [0xAAu8; 32]; // any non-RWT, non-zero mint
         let is_master = pool_type == POOL_TYPE_CONCENTRATED
             && !input_is_rwt
-            && (non_rwt_mint == USDC_MINT || non_rwt_mint == USDY_MINT);
+            && is_master_pool_counterparty_mint(&non_rwt_mint);
         assert!(!is_master, "StandardCurve pools must skip mint-route entirely");
+    }
+
+    /// 2026-05-18 smoke-3 regression — placeholder-mode happy path. With
+    /// both `USDC_MINT == [0; 32]` AND `USDY_MINT == [0; 32]` (test-validator
+    /// pre-mainnet state), the shared `is_master_pool_counterparty_mint`
+    /// helper accepts ANY non-RWT, non-zero counterparty mint. The
+    /// `is_master_pool_usdc_to_rwt` gate therefore fires for a USDC→RWT
+    /// swap with a runtime-generated USDC mint pubkey, and the mint-route
+    /// branch is reachable.
+    ///
+    /// Pre-fix: the gate compared the runtime USDC pubkey against the
+    /// zero placeholder constants and never fired → bin-walk fallback
+    /// reverted on empty BinArray bins.
+    #[test]
+    fn master_usdc_to_rwt_placeholder_mode_accepts_any_non_rwt() {
+        const ZERO_MINT: [u8; 32] = [0; 32];
+        assert_eq!(USDC_MINT, ZERO_MINT, "USDC_MINT must be the placeholder in this build");
+        assert_eq!(USDY_MINT, ZERO_MINT, "USDY_MINT must be the placeholder in this build");
+
+        let pool_type = POOL_TYPE_CONCENTRATED;
+        let input_is_rwt = false; // USDC→RWT direction
+        let runtime_usdc_mint = [0x42u8; 32]; // realistic non-RWT, non-zero mint
+        let is_master = pool_type == POOL_TYPE_CONCENTRATED
+            && !input_is_rwt
+            && is_master_pool_counterparty_mint(&runtime_usdc_mint);
+        assert!(
+            is_master,
+            "placeholder-mode test-validator must accept any non-zero non-RWT counterparty"
+        );
+    }
+
+    /// 2026-05-18 smoke-3 regression — canonical-mint-ordering coverage.
+    /// `require_valid_mint_pair` sorts mints lexicographically into
+    /// (`mint_a`, `mint_b`) with `mint_a < mint_b`. RWT can therefore end
+    /// up on EITHER side depending on the byte order of the counterparty
+    /// mint. The non-RWT detection must inspect both sides — picking
+    /// `pool.token_a_mint` unconditionally would be wrong when RWT happens
+    /// to be on side B.
+    ///
+    /// The helper's input is the non-RWT side regardless of which storage
+    /// slot it occupies; this test pins that the predicate decision is
+    /// independent of mint-pair ordering.
+    #[test]
+    fn master_pool_detection_handles_canonical_mint_ordering() {
+        // Scenario A: counterparty mint > RWT_MINT lexicographically →
+        // canonical order is (RWT, counterparty) → token_a is RWT, token_b
+        // is the non-RWT side.
+        let counterparty_high = [0xFEu8; 32];
+        assert!(
+            counterparty_high > RWT_MINT,
+            "test prerequisite: high counterparty > RWT"
+        );
+        assert!(
+            is_master_pool_counterparty_mint(&counterparty_high),
+            "non-RWT side on slot B must be accepted"
+        );
+
+        // Scenario B: counterparty mint < RWT_MINT lexicographically →
+        // canonical order is (counterparty, RWT) → token_a is non-RWT,
+        // token_b is RWT.
+        let counterparty_low = [0x01u8; 32];
+        assert!(
+            counterparty_low < RWT_MINT,
+            "test prerequisite: low counterparty < RWT"
+        );
+        assert!(
+            is_master_pool_counterparty_mint(&counterparty_low),
+            "non-RWT side on slot A must be accepted"
+        );
+    }
+
+    /// 2026-05-18 smoke-3 regression — pinned-mode rejection of arbitrary
+    /// mints. Once mainnet-pinning lands non-zero USDC/USDY bytes, the
+    /// strict equality branch must fire and reject runtime mints that
+    /// don't match. Mirror via test-local twin (the production constants
+    /// are still placeholders at this commit; the twin exercises the
+    /// future code path).
+    #[test]
+    fn master_pool_detection_pinned_usdc_rejects_other_b() {
+        // Test-local twin that mirrors `is_master_pool_counterparty_mint`
+        // but takes the USDC/USDY constants as explicit args. Logic must
+        // match the production helper byte-for-byte — any drift would also
+        // be caught by handler-level negative ACs once they land.
+        fn twin(
+            non_rwt: &[u8; 32],
+            usdc: &[u8; 32],
+            usdy: &[u8; 32],
+        ) -> bool {
+            const ZERO_MINT: [u8; 32] = [0; 32];
+            let usdc_pinned = *usdc != ZERO_MINT;
+            let usdy_pinned = *usdy != ZERO_MINT;
+            if usdc_pinned || usdy_pinned {
+                let m_usdc = usdc_pinned && non_rwt == usdc;
+                let m_usdy = usdy_pinned && non_rwt == usdy;
+                m_usdc || m_usdy
+            } else {
+                non_rwt != &ZERO_MINT
+            }
+        }
+
+        let synthetic_usdc: [u8; 32] = [0x11; 32];
+        let synthetic_usdy: [u8; 32] = [0x22; 32];
+
+        // Runtime mint that is NOT the pinned USDC/USDY — must be rejected.
+        let runtime_other: [u8; 32] = [0xFF; 32];
+        assert!(!twin(&runtime_other, &synthetic_usdc, &synthetic_usdy));
+
+        // Pinned USDC accepted.
+        assert!(twin(&synthetic_usdc, &synthetic_usdc, &synthetic_usdy));
+        // Pinned USDY accepted.
+        assert!(twin(&synthetic_usdy, &synthetic_usdc, &synthetic_usdy));
     }
 
     /// (7) Price exactly at threshold → bin-walk (strict `>` boundary).
