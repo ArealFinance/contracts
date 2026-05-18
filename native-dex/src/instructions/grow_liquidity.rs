@@ -54,7 +54,10 @@ use crate::constants::*;
 use crate::error::DexError;
 use crate::events::LiquidityGrew;
 use crate::state::{BinArray, DexConfig, LiquidityNexus, PoolState};
-use crate::validation::{pubkey_bytes, read_token_account_mint, read_token_account_owner};
+use crate::validation::{
+    is_master_pool_counterparty_mint, pubkey_bytes, read_token_account_mint,
+    read_token_account_owner,
+};
 
 #[derive(Accounts)]
 pub struct GrowLiquidity<'info> {
@@ -88,8 +91,10 @@ pub struct GrowLiquidity<'info> {
     pub liquidity_nexus: &'info AccountView,
 
     /// Nexus-owned USDC ATA. PDA-signed SPL Transfer source. Validated
-    /// for SPL-owner == `liquidity_nexus` and mint == `USDC_MINT` in
-    /// the handler.
+    /// for SPL-owner == `liquidity_nexus` and mint passing
+    /// `is_master_pool_counterparty_mint` (placeholder-aware: strict
+    /// `USDC_MINT`/`USDY_MINT` on mainnet, any non-RWT mint on
+    /// test-validator) in the handler.
     #[account(mut, owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
     pub nexus_usdc_ata: &'info AccountView,
 
@@ -179,18 +184,27 @@ pub fn handler(
 
     // 5. Nexus USDC source ATA invariants — SPL-owner must equal the
     //    Nexus PDA (else a foreign USDC ATA could be drained), mint must
-    //    equal USDC_MINT (else cross-token transfer would revert mid-CPI
-    //    with a worse error). USDC_MINT is `[0u8; 32]` on test-validator,
-    //    so the mint check is structural only on mainnet (per the
-    //    constants.rs MAINNET-REPLACE note); on devnet the SPL Transfer
-    //    would still reject a mismatched destination.
+    //    pass the master-pool counterparty gate (else cross-token transfer
+    //    would revert mid-CPI with a worse error).
+    //
+    //    The mint predicate is the placeholder-aware
+    //    `is_master_pool_counterparty_mint` helper: on mainnet it strict-equals
+    //    the pinned `USDC_MINT` / `USDY_MINT`; on test-validator (both
+    //    constants = `[0u8; 32]` MAINNET-REPLACE placeholders) it accepts
+    //    any non-zero, non-RWT mint. Mirrors the swap-time mint-route gate
+    //    (smoke-3 fix, 2026-05-18) so creation, swap, and grow paths share
+    //    one predicate and cannot drift. The unconditional `src_mint ==
+    //    USDC_MINT` check was structurally broken on test-validator: every
+    //    runtime-generated USDC mint compared unequal to `[0u8; 32]`, so
+    //    `grow_liquidity` always reverted with `InvalidNexusToken` and the
+    //    Pool Rebalancer could never seed a bid wall in dev bootstrap.
     let nexus_addr = pubkey_bytes(ctx.accounts.liquidity_nexus);
     let src_owner = read_token_account_owner(ctx.accounts.nexus_usdc_ata)?;
     if src_owner != nexus_addr {
         return Err(ProgramError::from(DexError::InvalidTokenAccount).into());
     }
     let src_mint = read_token_account_mint(ctx.accounts.nexus_usdc_ata)?;
-    if src_mint != USDC_MINT {
+    if !is_master_pool_counterparty_mint(&src_mint) {
         return Err(ProgramError::from(DexError::InvalidNexusToken).into());
     }
 
