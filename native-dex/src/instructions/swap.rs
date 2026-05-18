@@ -269,11 +269,17 @@ pub(crate) fn swap_internal<'info>(
             bin_array_for_check,
             pool.active_bin_id,
         );
+        // CU-hotfix (2026-05-18) — see mint_rwt.rs for the full rationale: the
+        // eager `ok_or(ProgramError::from(...))` form invokes the From impl on
+        // the success path, logging a spurious "price_at_bin overflow when
+        // computing best-ask threshold" syscall every swap. Use `ok_or_else`
+        // (closure → lazy) so the conversion (and its log) runs only on the
+        // actual overflow branch.
         let best_ask_price_q = concentrated::price_at_bin(
             pool.bin_step_bps,
             pool.active_bin_id.saturating_add(1),
         )
-        .ok_or(ProgramError::from(DexError::PriceOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::PriceOverflow))?;
 
         // Pre-load NAV from the rwt_vault remaining_account so the routing
         // decision is data-driven. We need the 4 mint-route slots present
