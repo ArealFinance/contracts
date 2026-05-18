@@ -18,9 +18,9 @@ pub fn constant_product_output(reserve_in: u64, reserve_out: u64, net_input: u64
         return Err(ProgramError::from(DexError::EmptyReserves));
     }
     let numerator = (reserve_out as u128).checked_mul(net_input as u128)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     let denominator = (reserve_in as u128).checked_add(net_input as u128)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     if denominator == 0 {
         return Err(ProgramError::from(DexError::MathOverflow));
     }
@@ -36,20 +36,20 @@ pub fn calculate_fees(
     has_ot_treasury: bool,
 ) -> core::result::Result<FeeBreakdown, ProgramError> {
     let mut fee_total = arlex_lang::math::mul_div_u64(amount, fee_bps as u64, BPS_DENOMINATOR)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     // Minimum fee: 1 lamport for non-zero swaps. Prevents fee avoidance via swap splitting.
     if fee_total == 0 && amount > 0 && fee_bps > 0 {
         fee_total = 1;
     }
     let fee_lp = arlex_lang::math::mul_div_u64(fee_total, lp_fee_share_bps as u64, BPS_DENOMINATOR)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     // Remainder pattern: protocol gets dust
     let fee_protocol = fee_total.checked_sub(fee_lp)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     let ot_treasury_fee = if has_ot_treasury {
         arlex_lang::math::mul_div_u64(amount, OT_TREASURY_FEE_BPS as u64, BPS_DENOMINATOR)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
     } else {
         0
     };
@@ -69,7 +69,7 @@ pub fn calculate_lp_shares(
 ) -> core::result::Result<u128, ProgramError> {
     if is_first {
         let product = (amount_a as u128).checked_mul(amount_b as u128)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         let shares = arlex_lang::math::isqrt(product);
         if shares < MIN_LIQUIDITY as u128 {
             return Err(ProgramError::from(DexError::InitialLiquidityTooSmall));
@@ -79,10 +79,10 @@ pub fn calculate_lp_shares(
     } else {
         let shares_a = arlex_lang::math::checked_mul_div_u128(
             total_lp_shares, amount_a as u128, reserve_a as u128,
-        ).ok_or(ProgramError::from(DexError::MathOverflow))?;
+        ).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         let shares_b = arlex_lang::math::checked_mul_div_u128(
             total_lp_shares, amount_b as u128, reserve_b as u128,
-        ).ok_or(ProgramError::from(DexError::MathOverflow))?;
+        ).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         Ok(core::cmp::min(shares_a, shares_b))
     }
 }
@@ -98,10 +98,54 @@ pub fn calculate_remove_amounts(
         return Err(ProgramError::from(DexError::InsufficientLiquidity));
     }
     let a = arlex_lang::math::checked_mul_div_u128(shares, reserve_a as u128, total)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     let b = arlex_lang::math::checked_mul_div_u128(shares, reserve_b as u128, total)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     let a_u64 = u64::try_from(a).map_err(|_| ProgramError::from(DexError::MathOverflow))?;
     let b_u64 = u64::try_from(b).map_err(|_| ProgramError::from(DexError::MathOverflow))?;
     Ok((a_u64, b_u64))
+}
+
+#[cfg(test)]
+mod cu_hotfix_regression {
+    extern crate alloc;
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("amm.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
+        );
+    }
 }

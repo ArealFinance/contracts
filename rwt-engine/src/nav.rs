@@ -15,7 +15,7 @@ pub fn calculate_nav(capital: u128, supply: u64) -> core::result::Result<u64, Pr
         return Ok(INITIAL_NAV);
     }
     let nav = arlex_lang::math::mul_div_u128_u64(capital, NAV_SCALE, supply)
-        .ok_or(ProgramError::from(RwtError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
     let nav_u64 = u64::try_from(nav).map_err(|_| ProgramError::from(RwtError::MathOverflow))?;
     // SECURITY: clamp NAV to minimum 1 when supply > 0
     // Prevents NAV=0 from integer truncation at extreme capital/supply ratios
@@ -100,5 +100,45 @@ mod tests {
             Err(e) => assert_eq!(format!("{:?}", e), format!("{:?}", expected)),
             Ok(_) => panic!("overflow path must error"),
         }
+    }
+
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("nav.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
+        );
     }
 }

@@ -111,7 +111,7 @@ pub fn bin_walk_swap(
         let bin = &mut bin_array.bins[bin_idx];
 
         let price = arlex_lang::math::pow_bps(bin_step_bps, current_bin)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
         // Guard against price == 0 (extreme negative exponents)
         if price == 0 {
@@ -128,7 +128,7 @@ pub fn bin_walk_swap(
             // consumable_usdc = min(remaining_rwt * price / SCALE, available_usdc)
             let consumable = core::cmp::min(
                 arlex_lang::math::checked_mul_div_u128(remaining, price, CONCENTRATED_SCALE)
-                    .ok_or(ProgramError::from(DexError::MathOverflow))?,
+                    .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?,
                 available,
             );
             if consumable == 0 {
@@ -136,7 +136,7 @@ pub fn bin_walk_swap(
             }
             // rwt_consumed = ceil(consumable_usdc * SCALE / price) — pool keeps more (M-8)
             let rwt_consumed = arlex_lang::math::checked_mul_div_u128_round_up(consumable, CONCENTRATED_SCALE, price)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             let rwt_consumed = core::cmp::min(rwt_consumed, remaining);
 
             // Safe u64 conversion (consumable <= available which is u64, rwt_consumed <= remaining which started as u64)
@@ -146,9 +146,9 @@ pub fn bin_walk_swap(
             total_out += consumable;
             remaining -= rwt_consumed;
             bin.liquidity_b = bin.liquidity_b.checked_sub(consumable_u64)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             bin.liquidity_a = bin.liquidity_a.checked_add(rwt_consumed_u64)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
             if bin.liquidity_b == 0 {
                 current_bin -= 1;
@@ -163,7 +163,7 @@ pub fn bin_walk_swap(
             // consumable_rwt = min(remaining_usdc * SCALE / price, available_rwt)
             let consumable = core::cmp::min(
                 arlex_lang::math::checked_mul_div_u128(remaining, CONCENTRATED_SCALE, price)
-                    .ok_or(ProgramError::from(DexError::MathOverflow))?,
+                    .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?,
                 available,
             );
             if consumable == 0 {
@@ -171,7 +171,7 @@ pub fn bin_walk_swap(
             }
             // usdc_cost = ceil(consumable_rwt * price / SCALE) — pool keeps more (M-8)
             let usdc_cost = arlex_lang::math::checked_mul_div_u128_round_up(consumable, price, CONCENTRATED_SCALE)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             let usdc_cost = core::cmp::min(usdc_cost, remaining);
 
             let consumable_u64 = u64::try_from(consumable).map_err(|_| ProgramError::from(DexError::MathOverflow))?;
@@ -180,9 +180,9 @@ pub fn bin_walk_swap(
             total_out += consumable;
             remaining -= usdc_cost;
             bin.liquidity_a = bin.liquidity_a.checked_sub(consumable_u64)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             bin.liquidity_b = bin.liquidity_b.checked_add(usdc_cost_u64)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
             if bin.liquidity_a == 0 {
                 current_bin += 1;
@@ -224,10 +224,10 @@ pub fn sync_fee_lp_to_bin(
     let idx = (active - lower) as usize;
     if token_a_is_rwt {
         bin_array.bins[idx].liquidity_a = bin_array.bins[idx].liquidity_a
-            .checked_add(fee_lp).ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .checked_add(fee_lp).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     } else {
         bin_array.bins[idx].liquidity_b = bin_array.bins[idx].liquidity_b
-            .checked_add(fee_lp).ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .checked_add(fee_lp).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
     Ok(())
 }
@@ -254,11 +254,11 @@ pub fn sync_remaining_to_bin(
     if a_to_b {
         // Input is token_a (RWT side for a_to_b when token_a is RWT)
         bin_array.bins[idx].liquidity_a = bin_array.bins[idx].liquidity_a
-            .checked_add(remaining).ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .checked_add(remaining).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     } else {
         // Input is token_b
         bin_array.bins[idx].liquidity_b = bin_array.bins[idx].liquidity_b
-            .checked_add(remaining).ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .checked_add(remaining).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
     Ok(())
 }
@@ -277,7 +277,7 @@ pub fn proportional_bin_remove(
     }
     // remaining_fraction = (denominator - numerator) / denominator
     let remaining_num = fraction_denominator.checked_sub(fraction_numerator)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     // Capture pre-removal totals for dust reconciliation
     let mut pre_total_a: u128 = 0;
@@ -289,9 +289,9 @@ pub fn proportional_bin_remove(
 
     // Expected post-removal totals (what reserves will show)
     let expected_a = arlex_lang::math::checked_mul_div_u128(pre_total_a, remaining_num, fraction_denominator)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     let expected_b = arlex_lang::math::checked_mul_div_u128(pre_total_b, remaining_num, fraction_denominator)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     // Reduce each bin proportionally (floor rounding per bin)
     for i in 0..MAX_BINS {
@@ -299,12 +299,12 @@ pub fn proportional_bin_remove(
             bin_array.bins[i].liquidity_a as u128,
             remaining_num,
             fraction_denominator,
-        ).ok_or(ProgramError::from(DexError::MathOverflow))?;
+        ).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         let new_b = arlex_lang::math::checked_mul_div_u128(
             bin_array.bins[i].liquidity_b as u128,
             remaining_num,
             fraction_denominator,
-        ).ok_or(ProgramError::from(DexError::MathOverflow))?;
+        ).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         bin_array.bins[i].liquidity_a = u64::try_from(new_a)
             .map_err(|_| ProgramError::from(DexError::MathOverflow))?;
         bin_array.bins[i].liquidity_b = u64::try_from(new_b)
@@ -329,12 +329,12 @@ pub fn proportional_bin_remove(
         if dust_a > 0 {
             let d = u64::try_from(dust_a).map_err(|_| ProgramError::from(DexError::MathOverflow))?;
             bin_array.bins[idx].liquidity_a = bin_array.bins[idx].liquidity_a
-                .checked_add(d).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .checked_add(d).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         }
         if dust_b > 0 {
             let d = u64::try_from(dust_b).map_err(|_| ProgramError::from(DexError::MathOverflow))?;
             bin_array.bins[idx].liquidity_b = bin_array.bins[idx].liquidity_b
-                .checked_add(d).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .checked_add(d).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         }
     }
 
@@ -418,7 +418,7 @@ pub fn nav_bin_within_tolerance(
 ) -> core::result::Result<bool, ProgramError> {
     // 1. Compute price_at_bin in CONCENTRATED_SCALE units (12-decimal Q).
     let price_q = price_at_bin(bin_step_bps, bin)
-        .ok_or(ProgramError::from(DexError::PriceOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::PriceOverflow))?;
 
     // 2. Lift NAV (6-decimal USDC) to CONCENTRATED_SCALE units. Mirrors the
     //    `should_route_to_mint` conversion: `nav_q = nav * (CONCENTRATED_SCALE / 1_000_000)`.
@@ -469,7 +469,7 @@ fn sum_active_zone_usdc(
         let idx = (bin_id - lower) as usize;
         sum = sum
             .checked_add(bin_array.bins[idx].liquidity_b as u128)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
     Ok(sum)
 }
@@ -554,7 +554,7 @@ pub fn grow_redistribute(
     }
     if new_nav_bin
         .checked_sub(permanent_tail_floor_bin)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
         > (MAX_BINS as i32) - RIGHT_EDGE_BUFFER_BINS
     {
         return Err(ProgramError::from(DexError::ExceedsRightEdgeBuffer));
@@ -575,7 +575,7 @@ pub fn grow_redistribute(
 
     let total_usdc = current_usdc
         .checked_add(fresh_usdc as u128)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     // ---- Compute weight sum (Q32.32-normalised) ----
     //
@@ -589,7 +589,7 @@ pub fn grow_redistribute(
     for w in GEOMETRIC_WEIGHTS.iter().take(active_width) {
         weight_sum = weight_sum
             .checked_add(*w >> 32)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
     if weight_sum == 0 {
         return Err(ProgramError::from(DexError::MathOverflow));
@@ -615,17 +615,17 @@ pub fn grow_redistribute(
             GEOMETRIC_WEIGHTS[k] >> 32,
             weight_sum,
         )
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         let share_u64 = u64::try_from(share)
             .map_err(|_| ProgramError::from(DexError::MathOverflow))?;
         // Bin's liquidity_b was just zeroed above, so this is a clean set.
         bin_array.bins[idx].liquidity_b = bin_array.bins[idx]
             .liquidity_b
             .checked_add(share_u64)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         distributed = distributed
             .checked_add(share)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
 
     // ---- Conserve rounding dust onto the peak bin ----
@@ -637,7 +637,7 @@ pub fn grow_redistribute(
         bin_array.bins[peak_idx].liquidity_b = bin_array.bins[peak_idx]
             .liquidity_b
             .checked_add(dust_u64)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
 
     Ok(new_zone_lower)
@@ -710,7 +710,7 @@ pub fn compress_redistribute(
     for w in GEOMETRIC_WEIGHTS.iter().take(active_width) {
         weight_sum = weight_sum
             .checked_add(*w >> 32)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
     if weight_sum == 0 {
         return Err(ProgramError::from(DexError::MathOverflow));
@@ -735,16 +735,16 @@ pub fn compress_redistribute(
             GEOMETRIC_WEIGHTS[k] >> 32,
             weight_sum,
         )
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         let share_u64 = u64::try_from(share)
             .map_err(|_| ProgramError::from(DexError::MathOverflow))?;
         bin_array.bins[idx].liquidity_b = bin_array.bins[idx]
             .liquidity_b
             .checked_add(share_u64)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         distributed = distributed
             .checked_add(share)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
 
     // ---- Conserve rounding dust onto the peak bin ----
@@ -756,7 +756,7 @@ pub fn compress_redistribute(
         bin_array.bins[peak_idx].liquidity_b = bin_array.bins[peak_idx]
             .liquidity_b
             .checked_add(dust_u64)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
 
     Ok(new_zone_lower)
@@ -1165,5 +1165,45 @@ mod tests {
         // Larger NAV → reject.
         let err = compress_redistribute(&mut ba, 100, 500, 600, ACTIVE_ZONE_WIDTH);
         assert!(err.is_err());
+    }
+
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("concentrated.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
+        );
     }
 }

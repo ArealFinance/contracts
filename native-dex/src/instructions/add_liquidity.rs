@@ -312,7 +312,7 @@ pub(crate) fn add_liquidity_internal<'info>(
         // Calculate max balanced deposit based on pool ratio
         // deposit_b_needed = amount_a * reserve_b / reserve_a
         let b_needed = arlex_lang::math::mul_div_u64(amount_a, pool.reserve_b, pool.reserve_a)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
         let (dep_a, dep_b) = if b_needed <= amount_b {
             // amount_a is the limiting factor
@@ -320,7 +320,7 @@ pub(crate) fn add_liquidity_internal<'info>(
         } else {
             // amount_b is the limiting factor
             let a_needed = arlex_lang::math::mul_div_u64(amount_b, pool.reserve_a, pool.reserve_b)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             (a_needed, amount_b)
         };
 
@@ -344,17 +344,17 @@ pub(crate) fn add_liquidity_internal<'info>(
 
     // --- Effects: update pool state BEFORE CPIs ---
     pool.reserve_a = pool.reserve_a.checked_add(deposit_a)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     pool.reserve_b = pool.reserve_b.checked_add(deposit_b)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     if is_first {
         // Total includes burned MIN_LIQUIDITY shares
         pool.total_lp_shares = shares.checked_add(MIN_LIQUIDITY as u128)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     } else {
         pool.total_lp_shares = pool.total_lp_shares.checked_add(shares)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
 
     // --- Initialize or update LpPosition ---
@@ -417,10 +417,10 @@ pub(crate) fn add_liquidity_internal<'info>(
         if lp.shares > 0 {
             let delta_a_q64 = cumulative_a
                 .checked_sub(lp.fees_claimed_per_share_a)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             let delta_b_q64 = cumulative_b
                 .checked_sub(lp.fees_claimed_per_share_b)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             auto_claim_a = compute_claimable(delta_a_q64, lp.shares)?;
             auto_claim_b = compute_claimable(delta_b_q64, lp.shares)?;
             // Advance the snapshot so a subsequent claim_lp_fees observes
@@ -442,7 +442,7 @@ pub(crate) fn add_liquidity_internal<'info>(
         }
 
         lp.shares = lp.shares.checked_add(shares)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         lp.last_update_ts = clock.unix_timestamp;
     }
 
@@ -682,5 +682,45 @@ mod tests {
     #[test]
     fn accepts_standard_curve_add_liquidity() {
         assert!(enforce_user_lp_allowed(POOL_TYPE_STANDARD).is_ok());
+    }
+
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("add_liquidity.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
+        );
     }
 }

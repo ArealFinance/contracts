@@ -458,9 +458,9 @@ pub(crate) fn swap_internal<'info>(
             let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
 
             let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             amount_out = gross_out.checked_sub(total_deducted)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             fee_lp = fees.fee_lp;
             fee_protocol = fees.fee_protocol;
             fee_ot_treasury = fees.ot_treasury_fee;
@@ -469,9 +469,9 @@ pub(crate) fn swap_internal<'info>(
 
             let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
             let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             amount_out = gross_out.checked_sub(total_deducted)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             fee_lp = fees.fee_lp;
             fee_protocol = fees.fee_protocol;
             fee_ot_treasury = fees.ot_treasury_fee;
@@ -507,41 +507,41 @@ pub(crate) fn swap_internal<'info>(
             // destinations by the outbound transfers below.
             pool.reserve_a = pool.reserve_a
                 .checked_add(net_input)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             pool.reserve_b = pool.reserve_b.checked_sub(amount_out)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         } else {
             // Output side (B=RWT): fee_lp now leaves reserves (off-reserve
             // accumulator) instead of staying as auto-compound.
             pool.reserve_a = pool.reserve_a.checked_add(net_input)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             pool.reserve_b = pool.reserve_b.checked_sub(amount_out)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_protocol)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_ot_treasury)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_lp)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         }
     } else {
         if input_is_rwt {
             pool.reserve_b = pool.reserve_b
                 .checked_add(net_input)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             pool.reserve_a = pool.reserve_a.checked_sub(amount_out)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         } else {
             pool.reserve_b = pool.reserve_b.checked_add(net_input)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             pool.reserve_a = pool.reserve_a.checked_sub(amount_out)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_protocol)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_ot_treasury)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
                 .checked_sub(fee_lp)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         }
     }
 
@@ -563,9 +563,9 @@ pub(crate) fn swap_internal<'info>(
     }
 
     pool.total_fees_accumulated = pool.total_fees_accumulated
-        .checked_add(fee_lp).ok_or(ProgramError::from(DexError::MathOverflow))?
-        .checked_add(fee_protocol).ok_or(ProgramError::from(DexError::MathOverflow))?
-        .checked_add(fee_ot_treasury).ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .checked_add(fee_lp).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+        .checked_add(fee_protocol).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+        .checked_add(fee_ot_treasury).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     // --- Interactions: CPIs ---
     let pool_bump = [pool.bump];
@@ -578,9 +578,9 @@ pub(crate) fn swap_internal<'info>(
     // inbound debit stays equal to `amount_in`.
     let user_total_debit = if input_is_rwt {
         amount_in
-            .checked_add(fee_lp).ok_or(ProgramError::from(DexError::MathOverflow))?
-            .checked_add(fee_protocol).ok_or(ProgramError::from(DexError::MathOverflow))?
-            .checked_add(fee_ot_treasury).ok_or(ProgramError::from(DexError::MathOverflow))?
+            .checked_add(fee_lp).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+            .checked_add(fee_protocol).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+            .checked_add(fee_ot_treasury).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
     } else {
         amount_in
     };
@@ -760,12 +760,12 @@ pub(crate) fn accrue_lp_fee_per_share(
         pool.cumulative_fees_per_share_a = pool
             .cumulative_fees_per_share_a
             .checked_add(delta_per_share)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     } else {
         pool.cumulative_fees_per_share_b = pool
             .cumulative_fees_per_share_b
             .checked_add(delta_per_share)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
     Ok(())
 }
@@ -1259,5 +1259,45 @@ mod tests {
         assert_eq!(expected.len(), 8);
         let signers: usize = expected.iter().filter(|(_, s)| *s).count();
         assert_eq!(signers, 1, "exactly one signer (user pass-through)");
+    }
+
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("swap.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
+        );
     }
 }

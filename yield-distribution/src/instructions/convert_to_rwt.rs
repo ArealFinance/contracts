@@ -368,13 +368,13 @@ pub fn handler(
     let rwt_after = read_token_account_amount(ctx.accounts.accumulator_rwt_ata)?;
     let rwt_acquired = rwt_after
         .checked_sub(rwt_before)
-        .ok_or(ProgramError::from(YdError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(YdError::MathOverflow))?;
     let swap_out_rwt = rwt_after_swap
         .checked_sub(rwt_before)
-        .ok_or(ProgramError::from(YdError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(YdError::MathOverflow))?;
     let mint_out_rwt = rwt_after
         .checked_sub(rwt_after_swap)
-        .ok_or(ProgramError::from(YdError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(YdError::MathOverflow))?;
 
     // Outer slippage check (D1).
     if rwt_acquired < min_rwt_out {
@@ -388,10 +388,10 @@ pub fn handler(
 
     // ── 10. Fee math (BPS of gross rwt_acquired) ──────────────────
     let fee = arlex_lang::math::mul_div_u64(rwt_acquired, protocol_fee_bps, BPS_DENOMINATOR)
-        .ok_or(ProgramError::from(YdError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(YdError::MathOverflow))?;
     let net_rwt = rwt_acquired
         .checked_sub(fee)
-        .ok_or(ProgramError::from(YdError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(YdError::MathOverflow))?;
 
     // ── 11. State mutations BEFORE the outbound transfers ─────────
     let now = Clock::get()?.unix_timestamp;
@@ -401,7 +401,7 @@ pub fn handler(
         dist.total_funded = dist
             .total_funded
             .checked_add(net_rwt)
-            .ok_or(ProgramError::from(YdError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(YdError::MathOverflow))?;
         dist.last_fund_ts = now;
         (dist.total_funded, dist.locked_vested)
     };
@@ -430,7 +430,7 @@ pub fn handler(
     // ── 13. Emit StreamConverted ──────────────────────────────────
     let usdc_in = swap_in_used
         .checked_add(mint_in_used)
-        .ok_or(ProgramError::from(YdError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(YdError::MathOverflow))?;
 
     emit!(StreamConverted {
         distributor: distributor_address_bytes,
@@ -606,5 +606,45 @@ mod tests {
             Seed::from(bump_arr.as_ref()),
         ];
         assert_eq!(seeds.len(), 3);
+    }
+
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("convert_to_rwt.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
+        );
     }
 }

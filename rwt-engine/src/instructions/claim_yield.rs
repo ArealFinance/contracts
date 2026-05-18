@@ -247,7 +247,7 @@ pub fn handler(
     let after = read_token_account_amount(ctx.accounts.rwt_claim_ata)?;
     let claimed = after
         .checked_sub(before)
-        .ok_or(ProgramError::from(RwtError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
     if claimed == 0 {
         return Ok(());
     }
@@ -255,13 +255,13 @@ pub fn handler(
     // 9. Split (remainder pattern — protocol leg absorbs rounding leftover so
     //    Σ shares == claimed exactly, regardless of BPS rounding).
     let book_value_share = arlex_lang::math::mul_div_u64(claimed, book_value_bps, BPS_DENOMINATOR)
-        .ok_or(ProgramError::from(RwtError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
     let liquidity_share = arlex_lang::math::mul_div_u64(claimed, liquidity_bps, BPS_DENOMINATOR)
-        .ok_or(ProgramError::from(RwtError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
     let protocol_revenue_share = claimed
         .checked_sub(book_value_share)
         .and_then(|v| v.checked_sub(liquidity_share))
-        .ok_or(ProgramError::from(RwtError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
 
     // 10. Effects: mutate vault state BEFORE the SPL Transfer CPIs.
     //
@@ -285,14 +285,14 @@ pub fn handler(
         // (u64::MAX × u64::MAX / 1e6 < u128::MAX).
         let usd_value: u128 = (book_value_share as u128)
             .checked_mul(nav_before as u128)
-            .ok_or(ProgramError::from(RwtError::MathOverflow))?
+            .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?
             .checked_div(NAV_SCALE as u128)
-            .ok_or(ProgramError::from(RwtError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
 
         vault.total_invested_capital = vault
             .total_invested_capital
             .checked_add(usd_value)
-            .ok_or(ProgramError::from(RwtError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
         vault.nav_book_value =
             calculate_nav(vault.total_invested_capital, vault.total_rwt_supply)?;
 
@@ -452,5 +452,45 @@ mod tests {
         let (b, l, p) = split(u64::MAX);
         let sum = (b as u128) + (l as u128) + (p as u128);
         assert_eq!(sum, u64::MAX as u128, "Σ shares == u64::MAX at upper bound");
+    }
+
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("claim_yield.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
+        );
     }
 }

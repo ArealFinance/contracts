@@ -241,12 +241,12 @@ pub(crate) fn zap_liquidity_internal<'info>(
         // Calculate the balanced ratio and determine excess
         // Target ratio: amount_a / amount_b = reserve_a / reserve_b
         let value_a_in_b = arlex_lang::math::mul_div_u64(amount_a, pool.reserve_b, pool.reserve_a)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
         if value_a_in_b <= amount_b && amount_a > 0 {
             // Excess B: swap some B → A
             let excess_b = amount_b.checked_sub(value_a_in_b)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             let swap_b = excess_b / 2; // swap half of excess
 
             if swap_b == 0 {
@@ -281,9 +281,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     let fees = calculate_fees(swap_b, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     // Full swap_b into reserves (fee-on-top).
                     pool.reserve_b = pool.reserve_b.checked_add(swap_b)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_a = pool.reserve_a.checked_sub(swap_out)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
 
                     // Inbound debit on the RWT (B) side must include fee_lp +
@@ -291,8 +291,8 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     // fee_total + ot_treasury_fee.
                     rwt_extra_a = 0;
                     rwt_extra_b = fees.fee_lp
-                        .checked_add(fees.fee_protocol).ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_add(fees.ot_treasury_fee).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .checked_add(fees.fee_protocol).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+                        .checked_add(fees.ot_treasury_fee).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                 } else {
                     // A is RWT output. RWT side = A → rwt_is_side_a = true.
                     // Fees come from the output (gross_out) side per docs; the
@@ -300,10 +300,10 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     let gross_out_for_fees = constant_product_output(pool.reserve_b, pool.reserve_a, swap_b)?;
                     let fees = calculate_fees(gross_out_for_fees, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     pool.reserve_b = pool.reserve_b.checked_add(swap_b)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     // Subtract FULL gross_out (fee_lp stays in vault, tracked via accumulator).
                     pool.reserve_a = pool.reserve_a.checked_sub(gross_out_for_fees)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
 
                     rwt_extra_a = 0;
@@ -311,9 +311,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
                 }
 
                 final_a = amount_a.checked_add(swap_out)
-                    .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                 final_b = amount_b.checked_sub(swap_b)
-                    .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                 swapped_amount = swap_b;
                 fee_lp_total = flp;
                 fee_protocol_total = fp;
@@ -322,7 +322,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
         } else {
             // Excess A: swap some A → B
             let value_b_in_a = arlex_lang::math::mul_div_u64(amount_b, pool.reserve_a, pool.reserve_b)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             let excess_a = amount_a.checked_sub(value_b_in_a).unwrap_or(0);
             let swap_a = excess_a / 2;
 
@@ -354,16 +354,16 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     let fees = calculate_fees(swap_a, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     // Full swap_a into reserves (fee-on-top).
                     pool.reserve_a = pool.reserve_a.checked_add(swap_a)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_b = pool.reserve_b.checked_sub(swap_out)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
 
                     // Inbound debit on the RWT (A) side must include fee_lp +
                     // fee_protocol + fee_ot_treasury.
                     rwt_extra_a = fees.fee_lp
-                        .checked_add(fees.fee_protocol).ok_or(ProgramError::from(DexError::MathOverflow))?
-                        .checked_add(fees.ot_treasury_fee).ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .checked_add(fees.fee_protocol).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+                        .checked_add(fees.ot_treasury_fee).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     rwt_extra_b = 0;
                 } else {
                     // B is RWT output. RWT side = B → rwt_is_side_a = false.
@@ -371,10 +371,10 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     let gross_out_for_fees = constant_product_output(pool.reserve_a, pool.reserve_b, swap_a)?;
                     let fees = calculate_fees(gross_out_for_fees, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
                     pool.reserve_a = pool.reserve_a.checked_add(swap_a)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     // Subtract FULL gross_out (fee_lp stays in vault, tracked via accumulator).
                     pool.reserve_b = pool.reserve_b.checked_sub(gross_out_for_fees)
-                        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
 
                     rwt_extra_a = 0;
@@ -382,9 +382,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
                 }
 
                 final_a = amount_a.checked_sub(swap_a)
-                    .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                 final_b = amount_b.checked_add(swap_out)
-                    .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                    .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                 swapped_amount = swap_a;
                 fee_lp_total = flp;
                 fee_protocol_total = fp;
@@ -402,12 +402,12 @@ pub(crate) fn zap_liquidity_internal<'info>(
     } else {
         // Proportional: find the balanced pair
         let b_needed = arlex_lang::math::mul_div_u64(final_a, pool.reserve_b, pool.reserve_a)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         if b_needed <= final_b {
             (final_a, b_needed)
         } else {
             let a_needed = arlex_lang::math::mul_div_u64(final_b, pool.reserve_a, pool.reserve_b)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             (a_needed, final_b)
         }
     };
@@ -429,16 +429,16 @@ pub(crate) fn zap_liquidity_internal<'info>(
 
     // --- Effects: update pool reserves ---
     pool.reserve_a = pool.reserve_a.checked_add(dep_a)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     pool.reserve_b = pool.reserve_b.checked_add(dep_b)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     if is_first {
         pool.total_lp_shares = shares.checked_add(MIN_LIQUIDITY as u128)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     } else {
         pool.total_lp_shares = pool.total_lp_shares.checked_add(shares)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     }
 
     // Accumulate swap fees.
@@ -448,9 +448,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
     // the per-share accumulator); this just makes the cumulative
     // protocol-revenue stat truthful on the zap path.
     pool.total_fees_accumulated = pool.total_fees_accumulated
-        .checked_add(fee_lp_total).ok_or(ProgramError::from(DexError::MathOverflow))?
-        .checked_add(fee_protocol_total).ok_or(ProgramError::from(DexError::MathOverflow))?
-        .checked_add(fee_ot_total).ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .checked_add(fee_lp_total).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+        .checked_add(fee_protocol_total).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
+        .checked_add(fee_ot_total).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     // --- Initialize or update LpPosition ---
     let provider_key = pubkey_bytes(accounts.authority);
@@ -526,11 +526,11 @@ pub(crate) fn zap_liquidity_internal<'info>(
             let delta_a_q64 = pool
                 .cumulative_fees_per_share_a
                 .checked_sub(lp.fees_claimed_per_share_a)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             let delta_b_q64 = pool
                 .cumulative_fees_per_share_b
                 .checked_sub(lp.fees_claimed_per_share_b)
-                .ok_or(ProgramError::from(DexError::MathOverflow))?;
+                .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
             auto_claim_a = compute_claimable(delta_a_q64, lp.shares)?;
             auto_claim_b = compute_claimable(delta_b_q64, lp.shares)?;
             // Effects-before-CPI; the vault-side transfer below moves the
@@ -552,7 +552,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
         }
 
         lp.shares = lp.shares.checked_add(shares)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         lp.last_update_ts = clock.unix_timestamp;
     }
 
@@ -568,10 +568,10 @@ pub(crate) fn zap_liquidity_internal<'info>(
     // PDA-signed path: caller-supplied seeds authorize the PDA-owned ATA.
     let inbound_a = amount_a
         .checked_add(rwt_extra_a)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
     let inbound_b = amount_b
         .checked_add(rwt_extra_b)
-        .ok_or(ProgramError::from(DexError::MathOverflow))?;
+        .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
     if inbound_a > 0 {
         let transfer_a = arlex_lang::token::instructions::Transfer {
@@ -707,9 +707,9 @@ fn internal_swap(
         let gross_out = constant_product_output(reserve_in, reserve_out, amount_in)?;
         let fees = calculate_fees(gross_out, fee_bps, lp_fee_share_bps, has_ot_treasury)?;
         let total_deducted = fees.fee_total.checked_add(fees.ot_treasury_fee)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         let amount_out = gross_out.checked_sub(total_deducted)
-            .ok_or(ProgramError::from(DexError::MathOverflow))?;
+            .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         Ok((amount_out, fees.fee_lp, fees.fee_protocol, fees.ot_treasury_fee))
     }
 }
@@ -1355,6 +1355,46 @@ mod tests {
         assert!(
             crate::instructions::add_liquidity::enforce_user_lp_allowed(POOL_TYPE_STANDARD)
                 .is_ok()
+        );
+    }
+
+
+    /// CU-hotfix regression (2026-05-18). Eagerly-evaluated
+    /// `Option::ok_or(ProgramError::from(E))` calls invoke the
+    /// arlex-derive `From<E>` impl on the success path, which calls
+    /// `arlex_lang::log(msg)` — burning ~100 CUs per call site and
+    /// emitting a spurious "Arithmetic overflow" log line on every
+    /// instruction. See `rwt-engine/src/instructions/mint_rwt.rs`
+    /// (`mint_rwt_has_no_eager_ok_or_program_error`) for the full
+    /// background and the smoke-3 trace that first exposed this.
+    ///
+    /// The detection key is reassembled from two halves so this
+    /// test's own definition of it does not match.
+    #[test]
+    fn no_eager_ok_or_program_error() {
+        const SRC: &str = include_str!("zap_liquidity.rs");
+        const HALF_1: &str = ".ok_or(ProgramError";
+        const HALF_2: &str = "::from(";
+        let bad_needle = alloc::format!("{HALF_1}{HALF_2}");
+        let mut hits = 0usize;
+        for raw_line in SRC.lines() {
+            let line = match raw_line.find("//") {
+                Some(idx) => &raw_line[..idx],
+                None => raw_line,
+            };
+            if let Some(needle_pos) = line.find(&bad_needle) {
+                if line[..needle_pos].contains('"') {
+                    continue;
+                }
+                hits += 1;
+            }
+        }
+        assert_eq!(
+            hits, 0,
+            "found {hits} eager .ok_or(ProgramError-from(...)) calls — \
+             use .ok_or_else(|| ...) closure form to keep the error \
+             construction (and its arlex_lang::log syscall) off the \
+             success path (CU-hotfix 2026-05-18)",
         );
     }
 }
