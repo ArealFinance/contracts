@@ -73,13 +73,14 @@ pub const DISC_YD_CLAIM: [u8; 8] = [0x3e, 0xc6, 0xd6, 0xc1, 0xd5, 0x9f, 0x6c, 0x
 // replace bytes here AND in contracts/native-dex/src/constants.rs and
 // contracts/ownership-token/src/constants.rs (RWT_MINT) with the production
 // RWT mint. Mismatch causes silent DoS on all RWT yield claims.
-// Re-pinned to bootstrap-init.ts mint on the Areal-hosted Testnet validator
-// (3pBtHBiBwh4agqghTYuDQnZV1po5YahbaBGywtiZooRr) — see migrate-mints.sh
-// run on 2026-05-10 that pinned the same address in native-dex,
-// ownership-token and yield-distribution. RWT engine wasn't covered by
-// migrate-mints.sh so this file is patched in place. Restore the
-// FUQX2AepBoun... bytes (or the canonical mainnet pin) when re-deploying
-// to a cluster that uses the original R20 keypair.
+// On the Areal-hosted Testnet validator the RWT mint is generated fresh on
+// every ledger reset. `deploy-fornex.sh` step 4.6 derives the current mint
+// from the VPS secrets, rewrites these bytes (and the matching RWT_MINT pins
+// in native-dex / ownership-token / yield-distribution) in place, rebuilds,
+// deploys, then reverts this file back to the placeholder below. So the value
+// committed here is NOT the live Testnet mint — it is a build-time placeholder
+// overwritten at deploy. The live pin is whatever `data/e2e-bootstrap.secrets
+// .json::mints.rwt_mint_pubkey` holds for the current ledger.
 pub const RWT_MINT: [u8; 32] = [
     0x29, 0xcd, 0xfa, 0x85, 0x2d, 0x5e, 0xd9, 0x39,
     0x85, 0x2c, 0x4a, 0x70, 0x9b, 0x3c, 0x8a, 0x66,
