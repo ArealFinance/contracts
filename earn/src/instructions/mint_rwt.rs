@@ -1,18 +1,28 @@
 //! `mint_rwt` — user deposits USDC, receives earn-RWT at current NAV.
 //!
-//! Math (Option B "splits с total deposit"):
-//!   rwa_amount       = N × split_rwa_bps      / 10_000
-//!   liquidity_amount = N × split_liquidity_bps / 10_000
-//!   treasury_amount  = N × split_treasury_bps  / 10_000
-//!   rwt_out = rwa_amount × NAV_SCALE / NAV
+//! Pricing rule: **mint price = Book NAV** (no premium above NAV). The
+//! user receives RWT only for the portion of their deposit that lands in
+//! NAV-counted buckets (RWA + Liquidity). The Treasury portion is the
+//! implicit mint fee — user does not receive RWT for it.
+//!
+//! Math:
+//!   rwa_amount       = N × split_rwa_bps       / 10_000   (60% default)
+//!   liquidity_amount = N × split_liquidity_bps / 10_000   (30% default)
+//!   treasury_amount  = N × split_treasury_bps  / 10_000   (10% default — mint fee)
+//!
+//!   backing_added = rwa_amount + liquidity_amount   (= 0.9 × N at defaults)
+//!   rwt_out       = backing_added × NAV_SCALE / NAV
 //!
 //! NAV = (total_invested_capital × NAV_SCALE) / total_rwt_supply
 //!       (with INITIAL_NAV guard when supply == 0)
 //!
 //! After mint:
-//!   total_invested_capital += rwa_amount + liquidity_amount
+//!   total_invested_capital += backing_added
 //!   total_rwt_supply       += rwt_out  (via SPL Token mint_to)
-//!   → NAV strictly rises (more backing per unit RWT).
+//!   → NAV stays EXACTLY constant (backing grows in lockstep with supply).
+//!
+//! Example at defaults: user deposits $100 at NAV $1.00 → receives 90 RWT.
+//! Effective mint fee = 10% (vs $100 USDC for 100 RWT at exact NAV).
 //!
 //! TODO(L1): full handler implementation.
 
@@ -69,15 +79,20 @@ pub fn handler(
     // 2. Validate ATAs against config (rwa/liquidity/treasury addresses match)
     // 3. Validate rwt_mint matches config.rwt_mint
     // 4. amount >= min_mint_amount
-    // 5. Compute split: rwa, liquidity, treasury (anti-dust: each >= 0)
+    // 5. Compute split: rwa, liquidity, treasury (each ≥ 1 to avoid dust)
     // 6. Compute NAV from config.total_invested_capital + read mint.supply
-    // 7. rwt_out = rwa × NAV_SCALE / NAV (zero check → ZeroRwtOutput)
-    // 8. min_rwt_out check → SlippageExceeded
+    //    (INITIAL_NAV guard when supply == 0)
+    // 7. backing_added = rwa + liquidity
+    // 8. rwt_out = backing_added × NAV_SCALE / NAV
+    //    - rwt_out == 0 → ZeroRwtOutput
+    //    - rwt_out < min_rwt_out → SlippageExceeded
     // 9. CPI Transfer user → rwa_wallet (rwa amount)
     // 10. CPI Transfer user → liquidity_wallet (liquidity amount)
     // 11. CPI Transfer user → treasury_wallet (treasury amount)
-    // 12. CPI mint_to user_rwt_ata (signed by EarnConfig PDA seeds)
-    // 13. config.total_invested_capital += (rwa + liquidity) as u128
-    // 14. Emit RwtMinted
+    // 12. CPI mint_to user_rwt_ata (rwt_out, signed by EarnConfig PDA)
+    // 13. config.total_invested_capital += backing_added as u128
+    //     (NAV stays constant — supply grew by rwt_out, capital grew by backing_added,
+    //      ratio preserved since rwt_out = backing_added × NAV_SCALE / NAV)
+    // 14. Emit RwtMinted with nav_before == nav_after (sanity invariant)
     Ok(())
 }

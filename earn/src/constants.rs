@@ -12,10 +12,14 @@ pub const MIN_CAPITAL_FLOOR: u64 = 1;   // prevents NAV = 0 with supply > 0
 pub const RWT_DECIMALS: u8 = 6;
 
 // ===== Mint split defaults (sum = 10_000) =====
+// Aggressive bootstrap calibration: high Liquidity bump per mint (30%)
+// to grow redemption / DEX-LP buffer quickly; high Treasury cut (10%) to
+// fund operations during V1 before secondary revenue streams kick in.
+// Calibration is tunable via `update_config` once bootstrap phase ends.
 pub const BPS_DENOMINATOR: u64 = 10_000;
-pub const DEFAULT_SPLIT_RWA_BPS: u16 = 9_000;        // 90% → RWA wallet (buys underlying)
-pub const DEFAULT_SPLIT_LIQUIDITY_BPS: u16 = 800;    //  8% → Liquidity wallet (counts in NAV)
-pub const DEFAULT_SPLIT_TREASURY_BPS: u16 = 200;     //  2% → ARL Treasury (revenue, not in NAV)
+pub const DEFAULT_SPLIT_RWA_BPS: u16 = 6_000;        // 60% → RWA wallet (buys underlying)
+pub const DEFAULT_SPLIT_LIQUIDITY_BPS: u16 = 3_000;  // 30% → Liquidity wallet (counts in NAV)
+pub const DEFAULT_SPLIT_TREASURY_BPS: u16 = 1_000;   // 10% → ARL Treasury (revenue, not in NAV)
 
 pub const MIN_MINT_AMOUNT: u64 = 1_000_000; // $1.00 minimum deposit (anti-dust)
 
