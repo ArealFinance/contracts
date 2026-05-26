@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "earn",
     "futarchy",
     "native-dex",
     "ownership-token",
