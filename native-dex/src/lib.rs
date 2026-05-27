@@ -91,6 +91,9 @@ use instructions::claim_lp_fees::ClaimLpFees;
 use instructions::grow_liquidity::GrowLiquidity;
 use instructions::compress_liquidity::CompressLiquidity;
 
+#[cfg(feature = "devnet")]
+declare_id!("F9PaTy8SxmrLeheGycdGVAZBEB6FETMhoBfTUeSQLJ9u");
+#[cfg(not(feature = "devnet"))]
 declare_id!("DEX8LmvJpjefPS1cGS9zWB9ybxN24vNjTTrusBeqyARL");
 
 #[program]
