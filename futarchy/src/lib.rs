@@ -39,6 +39,9 @@ use instructions::execute_proposal::ExecuteProposal;
 use instructions::claim_ot_governance::ClaimOtGovernance;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
+#[cfg(feature = "devnet")]
+declare_id!("25PqXCUXetwG19HunKEYJ1GE3YKBZkCo5KwWK4VdUTEQ");
+#[cfg(not(feature = "devnet"))]
 declare_id!("FUTsbsdyJmEWa5LSYHWXMr9hQFyVsrJ1agGvRQGR1ARL");
 
 #[program]

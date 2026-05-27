@@ -9,3 +9,6 @@ arlex-lang = { workspace = true }
 sha2 = { workspace = true }
 [lib]
 crate-type = ["cdylib", "lib"]
+
+[features]
+devnet = []
