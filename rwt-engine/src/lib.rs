@@ -49,6 +49,9 @@ use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthority
 use instructions::vault_swap::VaultSwap;
 use instructions::claim_yield::ClaimYield;
 
+#[cfg(feature = "devnet")]
+declare_id!("G5zE57v3fBdWuxPvMmpwTPxATdnR99u6j5U9YfU4kABw");
+#[cfg(not(feature = "devnet"))]
 declare_id!("RWT9hgbjHQDj98xP7FYsT5QYp5X32XyK6QfMRmFtARL");
 
 #[program]
