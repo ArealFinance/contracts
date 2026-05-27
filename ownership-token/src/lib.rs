@@ -48,6 +48,9 @@ use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthority
 use instructions::claim_yd_for_treasury::ClaimYdForTreasury;
 use state::BatchDestination;
 
+#[cfg(feature = "devnet")]
+declare_id!("Eu7hc5gdjVHGff51bQHEDF1fSsWVRvUE15vBsFwu2oaX");
+#[cfg(not(feature = "devnet"))]
 declare_id!("oWnqbNwmEdjNS5KVbxz8xeuGNjKMd1aiNF89d7qdARL");
 
 #[program]

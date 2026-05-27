@@ -13,3 +13,6 @@ bs58 = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "lib"]
+
+[features]
+devnet = []
