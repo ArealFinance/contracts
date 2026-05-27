@@ -28,3 +28,4 @@ crate-type = ["cdylib", "lib"]
 # the assert verifies the bytes have actually been replaced.
 [features]
 dev-placeholder-mints = []
+devnet = []

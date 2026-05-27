@@ -48,6 +48,9 @@ use instructions::update_config::UpdateConfig;
 use instructions::update_publish_authority::UpdatePublishAuthority;
 use instructions::withdraw_liquidity_holding::WithdrawLiquidityHolding;
 
+#[cfg(feature = "devnet")]
+declare_id!("DaJvfRk5m6bWYBNMw4CujmBSjni1U4mzhpBLEmN2Lwro");
+#[cfg(not(feature = "devnet"))]
 declare_id!("YLD9EBikcTmVCnVzdx6vuNajrDkp8tyCAgZrqTwmMXF");
 
 #[program]
