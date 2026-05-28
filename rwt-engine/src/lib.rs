@@ -48,6 +48,8 @@ use instructions::pause::{PauseMint, UnpauseMint};
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 use instructions::vault_swap::VaultSwap;
 use instructions::claim_yield::ClaimYield;
+#[cfg(feature = "devnet")]
+use instructions::create_rwt_metadata::CreateRwtMetadata;
 
 #[cfg(feature = "devnet")]
 declare_id!("G5zE57v3fBdWuxPvMmpwTPxATdnR99u6j5U9YfU4kABw");
@@ -157,5 +159,22 @@ pub mod rwt_engine {
         proof: alloc::vec::Vec<[u8; 32]>,
     ) -> Result<()> {
         crate::instructions::claim_yield::handler(ctx, cumulative_amount, proof)
+    }
+
+    /// Devnet-only: create Metaplex Token Metadata account for the RWT mint.
+    /// Permissionless — gated only by the RwtVault `authority` signature.
+    #[cfg(feature = "devnet")]
+    pub fn create_rwt_metadata(
+        ctx: Context<CreateRwtMetadata>,
+        name: [u8; 32],
+        name_len: u8,
+        symbol: [u8; 10],
+        symbol_len: u8,
+        uri: [u8; 200],
+        uri_len: u8,
+    ) -> Result<()> {
+        crate::instructions::create_rwt_metadata::handler(
+            ctx, name, name_len, symbol, symbol_len, uri, uri_len,
+        )
     }
 }

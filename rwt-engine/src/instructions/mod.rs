@@ -8,3 +8,5 @@ pub mod pause;
 pub mod authority_transfer;
 pub mod vault_swap;
 pub mod claim_yield;
+#[cfg(feature = "devnet")]
+pub mod create_rwt_metadata;
