@@ -46,6 +46,8 @@ use instructions::spend_treasury::SpendTreasury;
 use instructions::batch_update_destinations::BatchUpdateDestinations;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 use instructions::claim_yd_for_treasury::ClaimYdForTreasury;
+#[cfg(feature = "devnet")]
+use instructions::create_ot_metadata::CreateOtMetadata;
 use state::BatchDestination;
 
 #[cfg(feature = "devnet")]
@@ -118,5 +120,22 @@ pub mod ownership_token {
         proof: alloc::vec::Vec<[u8; 32]>,
     ) -> Result<()> {
         crate::instructions::claim_yd_for_treasury::handler(ctx, cumulative_amount, proof)
+    }
+
+    /// Devnet-only: create Metaplex Token Metadata account for an OT mint.
+    /// Gated by OtGovernance.authority signature + is_active check.
+    #[cfg(feature = "devnet")]
+    pub fn create_ot_metadata(
+        ctx: Context<CreateOtMetadata>,
+        name: [u8; 32],
+        name_len: u8,
+        symbol: [u8; 10],
+        symbol_len: u8,
+        uri: [u8; 200],
+        uri_len: u8,
+    ) -> Result<()> {
+        crate::instructions::create_ot_metadata::handler(
+            ctx, name, name_len, symbol, symbol_len, uri, uri_len,
+        )
     }
 }

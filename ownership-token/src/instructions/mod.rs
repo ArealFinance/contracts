@@ -5,3 +5,5 @@ pub mod spend_treasury;
 pub mod batch_update_destinations;
 pub mod authority_transfer;
 pub mod claim_yd_for_treasury;
+#[cfg(feature = "devnet")]
+pub mod create_ot_metadata;
