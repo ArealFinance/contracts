@@ -58,9 +58,11 @@ use instructions::pause::{PauseEarn, UnpauseEarn};
 use instructions::update_config::UpdateConfig;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
-// TODO(deploy): replace with a vanity keypair (e.g. `Earnxxxxxxxx...ARL`)
-// before mainnet. SystemProgram address used here as a placeholder so
-// declare_id! parses; this MUST NOT remain at deploy time (Phase 4 grind).
+// Program ID. Devnet uses the keypair at keys/devnet/earn.json; the
+// non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
+#[cfg(feature = "devnet")]
+declare_id!("HMBZu87F9zTt4JGbQwaL5V6tFXdLBUyLtgeYTsVh1Rzu");
+#[cfg(not(feature = "devnet"))]
 declare_id!("11111111111111111111111111111111");
 
 #[program]

@@ -11,5 +11,9 @@ arlex-lang = { workspace = true }
 sha2 = { workspace = true }
 bs58 = { workspace = true }
 
+[features]
+# Selects the devnet program ID in declare_id! (keys/devnet/staking.json).
+devnet = []
+
 [lib]
 crate-type = ["cdylib", "lib"]

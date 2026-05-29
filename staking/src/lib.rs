@@ -52,8 +52,11 @@ use instructions::pause::{PauseStaking, UnpauseStaking};
 use instructions::update_config::UpdateConfig;
 use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
 
-// TODO(deploy): replace with a vanity keypair before mainnet (Phase 4 grind).
-// SystemProgram address used as a placeholder so `declare_id!` parses.
+// Program ID. Devnet uses the keypair at keys/devnet/staking.json; the
+// non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
+#[cfg(feature = "devnet")]
+declare_id!("3WFdgqHFUnqtZoKQLpj8pQPd3ecitBGG9M2eBmaup8JL");
+#[cfg(not(feature = "devnet"))]
 declare_id!("11111111111111111111111111111111");
 
 #[program]
