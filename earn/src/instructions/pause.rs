@@ -1,14 +1,16 @@
 //! `pause` / `unpause` — pause-authority-only emergency stop for mint flow.
 //!
-//! `stream_inflow`, `writedown_capital`, `update_config` are NOT gated by
-//! pause (admin must remain able to write down impaired capital or top up
-//! liquidity even during a pause).
-//!
-//! TODO(L1): full handler implementation.
+//! `add_to_basket`, `writedown_capital`, `update_config` are NOT gated by
+//! pause (admin must remain able to write down impaired capital or reinvest
+//! income even during a pause). Only `mint_rwt` checks `is_paused`.
 
 use arlex_lang::prelude::*;
+use pinocchio::sysvars::{Sysvar, clock::Clock};
 
 use crate::constants::EARN_CONFIG_SEED;
+use crate::error::EarnError;
+use crate::events::EarnPauseToggled;
+use crate::state::EarnConfig;
 
 #[derive(Accounts)]
 pub struct PauseEarn<'info> {
@@ -28,20 +30,41 @@ pub struct UnpauseEarn<'info> {
     pub earn_config: &'info AccountView,
 }
 
-pub fn pause_handler(_ctx: Context<PauseEarn>) -> Result<()> {
-    // TODO(L1):
-    // 1. Load EarnConfig
-    // 2. Check signer == config.pause_authority
-    // 3. config.is_paused = true (idempotent)
-    // 4. Emit EarnPauseToggled { is_paused: true }
+pub fn pause_handler(ctx: Context<PauseEarn>) -> Result<()> {
+    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+
+    // Manual check: signer must be pause_authority (not authority — different role).
+    if ctx.accounts.pause_authority.address().as_ref() != config.pause_authority.as_ref() {
+        return Err(ProgramError::from(EarnError::UnauthorizedPause));
+    }
+
+    // Idempotent — double pause succeeds silently.
+    config.is_paused = true;
+
+    let clock = Clock::get()?;
+    emit!(EarnPauseToggled {
+        is_paused: true,
+        timestamp: clock.unix_timestamp,
+    });
+
     Ok(())
 }
 
-pub fn unpause_handler(_ctx: Context<UnpauseEarn>) -> Result<()> {
-    // TODO(L1):
-    // 1. Load EarnConfig
-    // 2. Check signer == config.pause_authority
-    // 3. config.is_paused = false (idempotent)
-    // 4. Emit EarnPauseToggled { is_paused: false }
+pub fn unpause_handler(ctx: Context<UnpauseEarn>) -> Result<()> {
+    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+
+    if ctx.accounts.pause_authority.address().as_ref() != config.pause_authority.as_ref() {
+        return Err(ProgramError::from(EarnError::UnauthorizedPause));
+    }
+
+    // Idempotent — double unpause succeeds silently.
+    config.is_paused = false;
+
+    let clock = Clock::get()?;
+    emit!(EarnPauseToggled {
+        is_paused: false,
+        timestamp: clock.unix_timestamp,
+    });
+
     Ok(())
 }

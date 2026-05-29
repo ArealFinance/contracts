@@ -6,6 +6,7 @@ members = [
     "native-dex",
     "ownership-token",
     "rwt-engine",
+    "staking",
     "yield-distribution",
 ]
 

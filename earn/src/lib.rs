@@ -4,43 +4,39 @@
 // the contract crates don't expose.
 #![allow(unused_variables, unexpected_cfgs)]
 
-//! # Earn — minimal NAV-bearing token program.
+//! # Earn — minimal Book-NAV RWT issuer.
 //!
-//! Standalone, intentionally small (~6 instructions) RWT issuer for the
-//! `earn.areal.finance` retail product. Not coupled to OT, Futarchy, the
-//! native DEX, or yield-distribution — those live in their own programs.
+//! Standalone, intentionally small RWT issuer for the `earn.areal.finance`
+//! retail product. Not coupled to OT, Futarchy, the native DEX, or
+//! yield-distribution — those live in their own programs.
 //!
 //! ## Economic model
 //!
-//! Users mint earn-RWT by depositing USDC. The deposit splits three ways:
-//!   - **RWA wallet** (~90%) — operator-controlled USDC ATA. Off-chain
-//!     buys underlying real-world assets.
-//!   - **Liquidity wallet** (~8%) — program-PDA-owned USDC ATA. Counts in
-//!     NAV; reserved for future LP / buyback mechanisms.
-//!   - **ARL Treasury wallet** (~2%) — Areal revenue. NOT in NAV.
+//! Users mint RWT at **Book NAV × (1 + 1%)**:
+//!   - **body** (100% at Book NAV) → `basket_vault`, bumps `total_invested_capital`.
+//!   - **1% commission** → `dao_fee_destination` (Areal Finance revenue).
 //!
-//! RWT minted to user = `rwa_amount × NAV_SCALE / NAV` — i.e. only the
-//! RWA share converts to RWT. The Liquidity share boosts NAV for ALL
-//! holders (existing + new). The Treasury share is pure protocol revenue.
+//! The mint is value-neutral: supply and capital grow synchronously, so the
+//! Book NAV Price is never diluted by minting (**mint invariant**). The mint
+//! fee does NOT grow NAV — it is pure DAO revenue, excluded from capital.
 //!
 //! NAV is derived, not stored:
 //!   ```text
-//!   NAV = total_invested_capital × NAV_SCALE / total_rwt_supply
+//!   Book NAV Price = total_invested_capital × NAV_SCALE / total_rwt_supply
 //!   ```
 //! with INITIAL_NAV = $1.00 guard when supply == 0.
 //!
-//! ## Exit
-//!
-//! There is NO redeem instruction. Users exit by selling RWT on the
-//! native DEX secondary market (a separate earn-RWT/USDC pool must be
-//! seeded operationally before sell-side opens — V1 launches mint-only).
+//! `total_invested_capital` grows via `add_to_basket` (income reinvestment /
+//! appreciation → NAV ↑) and shrinks via `writedown_capital` (depreciation →
+//! NAV ↓). There is NO redeem — exit is via the secondary market (DEX).
 //!
 //! ## Built on Arlex (Pinocchio)
 //!
 //! Same framework as the other Areal programs. Uses classic SPL Token
-//! (`TokenkegQ…`) which on mainnet is now the p-token implementation.
+//! (`TokenkegQ…`), which on mainnet is now the p-token implementation.
 //!
-//! See `docs/contracts/earn.mdx` for the canonical specification.
+//! See `docs/contracts/earn.mdx` for the canonical specification and
+//! `docs/architecture/earn-layers.mdx` for the on-chain / off-chain boundary.
 
 extern crate alloc;
 
@@ -50,34 +46,38 @@ pub mod constants;
 pub mod error;
 pub mod events;
 pub mod state;
+pub mod nav;
+pub mod validation;
 pub mod instructions;
 
 use instructions::initialize::Initialize;
 use instructions::mint_rwt::MintRwt;
-use instructions::stream_inflow::StreamInflow;
+use instructions::add_to_basket::AddToBasket;
 use instructions::writedown_capital::WritedownCapital;
 use instructions::pause::{PauseEarn, UnpauseEarn};
 use instructions::update_config::UpdateConfig;
+use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
 // TODO(deploy): replace with a vanity keypair (e.g. `Earnxxxxxxxx...ARL`)
 // before mainnet. SystemProgram address used here as a placeholder so
-// declare_id! parses; this MUST NOT remain at deploy time.
+// declare_id! parses; this MUST NOT remain at deploy time (Phase 4 grind).
 declare_id!("11111111111111111111111111111111");
 
 #[program]
 pub mod earn {
     use super::*;
 
-    /// One-time bootstrap. Creates EarnConfig PDA, pins wallets/mints,
-    /// authority and pause-authority. Initial NAV is implicit ($1.00).
+    /// One-time bootstrap. Creates EarnConfig PDA, pins mints / basket_vault /
+    /// dao_fee_destination / pause_authority. Initial NAV is implicit ($1.00).
     pub fn initialize(
         ctx: Context<Initialize>,
+        authority: [u8; 32],
         pause_authority: [u8; 32],
     ) -> Result<()> {
-        crate::instructions::initialize::handler(ctx, pause_authority)
+        crate::instructions::initialize::handler(ctx, authority, pause_authority)
     }
 
-    /// User deposits USDC and receives earn-RWT at current NAV.
+    /// User deposits USDC at Book NAV (+1% fee), receives earn-RWT.
     /// `min_rwt_out`: slippage protection (revert if output < minimum).
     pub fn mint_rwt(
         ctx: Context<MintRwt>,
@@ -87,14 +87,14 @@ pub mod earn {
         crate::instructions::mint_rwt::handler(ctx, usdc_amount, min_rwt_out)
     }
 
-    /// Authority-only USDC top-up to liquidity_wallet. Bumps NAV without
-    /// minting RWT. Used to channel off-chain RWA revenue back into NAV.
-    pub fn stream_inflow(ctx: Context<StreamInflow>, amount: u64) -> Result<()> {
-        crate::instructions::stream_inflow::handler(ctx, amount)
+    /// Authority / off-chain executor reinvests income into the basket.
+    /// Bumps `total_invested_capital` without minting RWT → NAV rises.
+    pub fn add_to_basket(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
+        crate::instructions::add_to_basket::handler(ctx, amount)
     }
 
-    /// Authority-only capital writedown. Decreases NAV to reflect
-    /// real-world depreciation / amortization of underlying RWA.
+    /// Authority-only capital writedown. Decreases NAV to reflect real-world
+    /// depreciation / amortization of underlying RWA. No token move.
     pub fn writedown_capital(
         ctx: Context<WritedownCapital>,
         amount: u64,
@@ -113,20 +113,29 @@ pub mod earn {
         crate::instructions::pause::unpause_handler(ctx)
     }
 
-    /// Authority-only admin tuning of split bps + min_mint_amount.
+    /// Authority-only admin tuning of mint fee, min mint amount, and the
+    /// DAO fee destination.
     pub fn update_config(
         ctx: Context<UpdateConfig>,
-        split_rwa_bps: u16,
-        split_liquidity_bps: u16,
-        split_treasury_bps: u16,
+        mint_fee_bps: u16,
         min_mint_amount: u64,
+        dao_fee_destination: [u8; 32],
     ) -> Result<()> {
         crate::instructions::update_config::handler(
-            ctx,
-            split_rwa_bps,
-            split_liquidity_bps,
-            split_treasury_bps,
-            min_mint_amount,
+            ctx, mint_fee_bps, min_mint_amount, dao_fee_destination,
         )
+    }
+
+    /// Step 1: Current authority proposes a new authority.
+    pub fn propose_authority_transfer(
+        ctx: Context<ProposeAuthorityTransfer>,
+        new_authority: [u8; 32],
+    ) -> Result<()> {
+        crate::instructions::authority_transfer::propose_handler(ctx, new_authority)
+    }
+
+    /// Step 2: Proposed authority accepts the transfer.
+    pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
+        crate::instructions::authority_transfer::accept_handler(ctx)
     }
 }

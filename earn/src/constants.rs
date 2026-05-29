@@ -1,9 +1,9 @@
 //! Compile-time constants for the `earn` program.
 //!
 //! Keeps the same NAV scaling and SPL/system program IDs as `rwt-engine`
-//! so on-chain types interoperate naturally. The `RWT_MINT`/`USDC_MINT`
-//! pins MUST be replaced before deploy to a cluster other than the local
-//! Areal Testnet validator (`3pBtHBiBwh…` for RWT, `F9NVj8d…` for USDC).
+//! so on-chain types interoperate naturally. The `USDC_MINT` pin MUST be
+//! replaced before deploy to a cluster other than the local Areal Testnet
+//! validator.
 
 // ===== NAV pricing =====
 pub const NAV_SCALE: u64 = 1_000_000;   // 6-decimal fixed-point (matches USDC decimals)
@@ -11,15 +11,9 @@ pub const INITIAL_NAV: u64 = NAV_SCALE; // $1.00 when supply == 0
 pub const MIN_CAPITAL_FLOOR: u64 = 1;   // prevents NAV = 0 with supply > 0
 pub const RWT_DECIMALS: u8 = 6;
 
-// ===== Mint split defaults (sum = 10_000) =====
-// Aggressive bootstrap calibration: high Liquidity bump per mint (30%)
-// to grow redemption / DEX-LP buffer quickly; high Treasury cut (10%) to
-// fund operations during V1 before secondary revenue streams kick in.
-// Calibration is tunable via `update_config` once bootstrap phase ends.
+// ===== Fee model =====
 pub const BPS_DENOMINATOR: u64 = 10_000;
-pub const DEFAULT_SPLIT_RWA_BPS: u16 = 6_000;        // 60% → RWA wallet (buys underlying)
-pub const DEFAULT_SPLIT_LIQUIDITY_BPS: u16 = 3_000;  // 30% → Liquidity wallet (counts in NAV)
-pub const DEFAULT_SPLIT_TREASURY_BPS: u16 = 1_000;   // 10% → ARL Treasury (revenue, not in NAV)
+pub const DEFAULT_MINT_FEE_BPS: u16 = 100; // 1% protocol commission (tunable via update_config)
 
 pub const MIN_MINT_AMOUNT: u64 = 1_000_000; // $1.00 minimum deposit (anti-dust)
 
@@ -44,8 +38,7 @@ pub const ASSOCIATED_TOKEN_PROGRAM: [u8; 32] = [
 
 // ===== Token mint pins =====
 // Earn-RWT is a NEW SPL mint, separate from the big-app's rwt-engine RWT.
-// Will be set in `initialize` from the actual mint account; this constant
-// is reserved for potential future hardcoded validation.
+// Set in `initialize` from the actual mint account; no hardcoded pin needed here.
 //
 // USDC mint matches the Areal Testnet validator pin
 // (F9NVj8dFsqxbCfytfmrEWDjdDhmpV1YrjRuxiusGr9Ys).
@@ -58,12 +51,3 @@ pub const USDC_MINT: [u8; 32] = [
 
 // PDA seeds
 pub const EARN_CONFIG_SEED: &[u8] = b"earn_config";
-
-// Sanity check at compile time
-const _: () = assert!(
-    DEFAULT_SPLIT_RWA_BPS as u64
-        + DEFAULT_SPLIT_LIQUIDITY_BPS as u64
-        + DEFAULT_SPLIT_TREASURY_BPS as u64
-        == BPS_DENOMINATOR,
-    "mint split defaults must sum to BPS_DENOMINATOR",
-);

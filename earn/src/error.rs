@@ -11,8 +11,6 @@ pub enum EarnError {
     // ----- Lifecycle / state -----
     #[msg("Earn program is paused")]
     EarnPaused,
-    #[msg("Already initialized")]
-    AlreadyInitialized,
 
     // ----- Inputs -----
     #[msg("Amount must be > 0")]
@@ -29,24 +27,26 @@ pub enum EarnError {
     // ----- Math -----
     #[msg("Arithmetic overflow")]
     MathOverflow,
-    #[msg("Split bps must sum to 10,000")]
-    InvalidSplitBps,
     #[msg("Writedown would reduce capital below floor")]
     InsufficientCapital,
 
     // ----- Accounts -----
     #[msg("Invalid token account")]
     InvalidTokenAccount,
-    #[msg("RWA wallet mint must be USDC")]
-    InvalidRwaWalletMint,
-    #[msg("Liquidity wallet mint must be USDC")]
-    InvalidLiquidityWalletMint,
-    #[msg("Treasury wallet mint must be USDC")]
-    InvalidTreasuryWalletMint,
     #[msg("RWT mint does not match config.rwt_mint")]
     InvalidRwtMint,
     #[msg("Destination address cannot be zero")]
     ZeroDestination,
     #[msg("Pause authority cannot be zero address")]
     InvalidPauseAuthority,
+    #[msg("Fee destination cannot be zero address")]
+    InvalidFeeDestination,
+
+    // ----- 2-step authority transfer -----
+    #[msg("No pending authority transfer")]
+    NoPendingAuthority,
+    #[msg("Signer is not the pending authority")]
+    InvalidPendingAuthority,
+    #[msg("Cannot transfer authority to yourself")]
+    SelfTransfer,
 }
