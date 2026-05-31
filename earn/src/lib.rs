@@ -58,10 +58,10 @@ use instructions::pause::{PauseEarn, UnpauseEarn};
 use instructions::update_config::UpdateConfig;
 use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
 
-// Program ID. Devnet uses the keypair at keys/devnet/earn.json; the
+// Program ID. Devnet uses the keypair at keys/devnet/earn-v2.json; the
 // non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
 #[cfg(feature = "devnet")]
-declare_id!("HMBZu87F9zTt4JGbQwaL5V6tFXdLBUyLtgeYTsVh1Rzu");
+declare_id!("HGh7TcuqUbTRrFTYBUtsTctAEEmsANWnDxeWcbgqMg8b");
 #[cfg(not(feature = "devnet"))]
 declare_id!("11111111111111111111111111111111");
 

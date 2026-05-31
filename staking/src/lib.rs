@@ -52,10 +52,10 @@ use instructions::pause::{PauseStaking, UnpauseStaking};
 use instructions::update_config::UpdateConfig;
 use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
 
-// Program ID. Devnet uses the keypair at keys/devnet/staking.json; the
+// Program ID. Devnet uses the keypair at keys/devnet/staking-v2.json; the
 // non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
 #[cfg(feature = "devnet")]
-declare_id!("3WFdgqHFUnqtZoKQLpj8pQPd3ecitBGG9M2eBmaup8JL");
+declare_id!("CmKXHk3u6pDUC6Q11Le6gmhCgENQSFvduisXb7guUGoL");
 #[cfg(not(feature = "devnet"))]
 declare_id!("11111111111111111111111111111111");
 
