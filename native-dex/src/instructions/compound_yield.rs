@@ -252,7 +252,9 @@ pub fn handler(
     // 9. Update pool.reserve_<rwt_side>. Re-borrow pool_state mut now that
     //    the CPI has returned (no live mut borrow conflicts with invoke_signed).
     let reserve_after = {
-        let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
+        // `mut` binding: reserve write goes through the guard's DerefMut. This
+        // re-borrow happens AFTER the CPI returned, so no CPI follows the guard.
+        let mut pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
         if rwt_side == 0 {
             pool.reserve_a = pool
                 .reserve_a

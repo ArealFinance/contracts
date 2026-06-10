@@ -228,9 +228,12 @@ pub fn handler(
     //    (`ActiveZoneOverlapsTail`), and right-edge buffer
     //    (`ExceedsRightEdgeBuffer`). Returns the new active-zone lower bound.
     let new_active_zone_lower = {
-        let bin_array = BinArray::load_mut(ctx.accounts.bin_array, ctx.program_id)?;
+        // `&mut *bin_array`: DerefMut through the guard yields the
+        // `&mut BinArray` the helper expects. The guard drops at the end of this
+        // scope, before the PDA-signed Transfer CPI below.
+        let mut bin_array = BinArray::load_mut(ctx.accounts.bin_array, ctx.program_id)?;
         concentrated::grow_redistribute(
-            bin_array,
+            &mut *bin_array,
             pool_left_anchor,
             pool_tail_floor,
             pool_last_rebalance,
@@ -260,7 +263,9 @@ pub fn handler(
     //    per docs §449). `pool.reserve_b` is also bumped so the on-chain
     //    `reserve_<side>` accounting tracks the inbound USDC.
     {
-        let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
+        // `mut` binding: anchor/reserve writes go through the guard's DerefMut.
+        // This re-borrow is AFTER the CPI returned, so no CPI follows the guard.
+        let mut pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
         pool.last_rebalance_nav_bin = new_nav_bin;
         pool.active_zone_lower = new_active_zone_lower;
         pool.reserve_b = pool

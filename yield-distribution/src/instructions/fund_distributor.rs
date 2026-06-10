@@ -53,7 +53,10 @@ pub fn handler(ctx: Context<FundDistributor>, amount: u64) -> Result<()> {
         return Err(ProgramError::from(YdError::SystemPaused));
     }
 
-    let dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
+    // `mut` binding: vesting/funding writes go through the guard's DerefMut. The
+    // distributor account is NOT passed into the Transfer CPIs below (the
+    // depositor signs), so the guard may stay live across them.
+    let mut dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
     if !dist.is_active {
         return Err(ProgramError::from(YdError::DistributorNotActive));
     }
@@ -93,7 +96,9 @@ pub fn handler(ctx: Context<FundDistributor>, amount: u64) -> Result<()> {
 
     // --- Effects (CEI: update state before CPIs) ---
     let now = Clock::get()?.unix_timestamp;
-    vesting::lock_vesting(dist, now)?;
+    // `&mut *dist`: DerefMut through the guard yields the `&mut MerkleDistributor`
+    // the by-value-`&mut Self` helper expects.
+    vesting::lock_vesting(&mut *dist, now)?;
     dist.total_funded = dist
         .total_funded
         .checked_add(net)

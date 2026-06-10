@@ -42,7 +42,10 @@ pub struct DepositRewards<'info> {
 }
 
 pub fn handler(ctx: Context<DepositRewards>, rwt_amount: u64) -> Result<()> {
-    let config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
+    // `mut` binding: counter write goes through the guard's DerefMut. The
+    // staking_config PDA is NOT passed into the Transfer CPI below (the depositor
+    // signs), so the guard may stay live across the transfer.
+    let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
     // --- Whitelist: only the configured reward_depositor (NOT pause-gated) ---
     if ctx.accounts.depositor.address().as_ref() != config.reward_depositor.as_ref() {

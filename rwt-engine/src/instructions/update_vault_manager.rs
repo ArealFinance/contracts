@@ -17,7 +17,8 @@ pub struct UpdateVaultManager<'info> {
 }
 
 pub fn handler(ctx: Context<UpdateVaultManager>, new_manager: [u8; 32]) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // `mut` binding: manager write goes through the guard's DerefMut. No CPI.
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     // NOTE: Zero address is allowed — it disables manager role (no vault_swap possible).
     let old_manager = vault.manager;

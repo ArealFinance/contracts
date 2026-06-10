@@ -44,7 +44,8 @@ pub fn handler(
     }
 
     // --- Effects ---
-    let config = RwtDistributionConfig::load_mut(ctx.accounts.dist_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = RwtDistributionConfig::load_mut(ctx.accounts.dist_config, ctx.program_id)?;
     config.book_value_bps = book_value_bps;
     config.liquidity_bps = liquidity_bps;
     config.protocol_revenue_bps = protocol_revenue_bps;

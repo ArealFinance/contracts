@@ -42,34 +42,41 @@ pub struct CompleteUnstake<'info> {
 }
 
 pub fn handler(ctx: Context<CompleteUnstake>, nonce: u64) -> Result<()> {
-    let config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
+    // CHECKS + EFFECTS in a scope that drops the StakingConfig borrow guard
+    // before the Transfer CPI below. The staking_config PDA is passed into the
+    // Transfer as the signing authority, which the checked invoke rejects while
+    // the account is still mutably borrowed. Copy out the bump, the payout
+    // amount and the post-update reserved counter; the guard's Drop releases the
+    // borrow flag at the end of this block.
+    let (amount_rwt, reserved_after, config_bump);
+    {
+        let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
-    // Validate vault + user ATA against config.
-    if ctx.accounts.pool_vault.address().as_ref() != config.pool_vault.as_ref() {
-        return Err(ProgramError::from(StakingError::InvalidTokenAccount));
-    }
-    if read_token_account_mint(ctx.accounts.user_rwt_ata)? != config.rwt_mint {
-        return Err(ProgramError::from(StakingError::InvalidTokenAccount));
-    }
+        // Validate vault + user ATA against config.
+        if ctx.accounts.pool_vault.address().as_ref() != config.pool_vault.as_ref() {
+            return Err(ProgramError::from(StakingError::InvalidTokenAccount));
+        }
+        if read_token_account_mint(ctx.accounts.user_rwt_ata)? != config.rwt_mint {
+            return Err(ProgramError::from(StakingError::InvalidTokenAccount));
+        }
 
-    // L1: re-derive the canonical ticket PDA from seeds and require it to equal
-    // the passed account. Seeds mirror `initiate_unstake` exactly:
-    //   ["unstake", user, nonce.to_le_bytes()].
-    // This single canonical-address check is authoritative — it subsumes the
-    // owner/nonce/discriminator checks below as a defense against a substituted
-    // ticket account.
-    let nonce_le = nonce.to_le_bytes();
-    let user_seed = ctx.accounts.user.address();
-    let (expected_ticket, _ticket_bump) = arlex_lang::find_program_address(
-        &[UNSTAKE_SEED, user_seed.as_ref(), &nonce_le],
-        ctx.program_id,
-    );
-    if ctx.accounts.ticket.address().as_ref() != expected_ticket.as_ref() {
-        return Err(ProgramError::from(StakingError::TicketOwnerMismatch));
-    }
+        // L1: re-derive the canonical ticket PDA from seeds and require it to equal
+        // the passed account. Seeds mirror `initiate_unstake` exactly:
+        //   ["unstake", user, nonce.to_le_bytes()].
+        // This single canonical-address check is authoritative — it subsumes the
+        // owner/nonce/discriminator checks below as a defense against a substituted
+        // ticket account.
+        let nonce_le = nonce.to_le_bytes();
+        let user_seed = ctx.accounts.user.address();
+        let (expected_ticket, _ticket_bump) = arlex_lang::find_program_address(
+            &[UNSTAKE_SEED, user_seed.as_ref(), &nonce_le],
+            ctx.program_id,
+        );
+        if ctx.accounts.ticket.address().as_ref() != expected_ticket.as_ref() {
+            return Err(ProgramError::from(StakingError::TicketOwnerMismatch));
+        }
 
-    // --- Load + validate the ticket ---
-    let (amount_rwt, reserved_after) = {
+        // --- Load + validate the ticket ---
         let ticket = UnstakeTicket::load(ctx.accounts.ticket, ctx.program_id)?;
 
         // Owner must equal the signer.
@@ -87,19 +94,20 @@ pub fn handler(ctx: Context<CompleteUnstake>, nonce: u64) -> Result<()> {
             return Err(ProgramError::from(StakingError::CooldownNotElapsed));
         }
 
-        let amount_rwt = ticket.amount_rwt;
-        let reserved_after = config
+        amount_rwt = ticket.amount_rwt;
+        reserved_after = config
             .total_rwt_reserved
             .checked_sub(amount_rwt)
             .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
-        (amount_rwt, reserved_after)
-    };
 
-    // --- Effects: decrement reserved BEFORE CPI; capture bump for signing ---
-    config.total_rwt_reserved = reserved_after;
-    let config_bump = config.bump;
+        // --- Effects: decrement reserved BEFORE CPI; capture bump for signing ---
+        config.total_rwt_reserved = reserved_after;
+        config_bump = config.bump;
+    } // StakingConfig guard dropped here — borrow flag released before the CPI.
 
     // --- Interaction: pool_vault → user, signed by config PDA ---
+    // The StakingConfig borrow guard was dropped above, so passing staking_config
+    // as the Transfer authority here is accepted by the checked invoke.
     let bump_arr = [config_bump];
     let seeds = [
         Seed::from(STAKING_CONFIG_SEED),

@@ -111,22 +111,31 @@ pub fn handler(
     }.invoke()?;
 
     // --- Initialize RwtVault ---
-    let vault = RwtVault::init(ctx.accounts.rwt_vault, ctx.program_id)?;
-    vault.total_invested_capital = 0;
-    vault.total_rwt_supply = 0;
-    vault.nav_book_value = INITIAL_NAV;
-    vault.capital_accumulator_ata = [0u8; 32]; // set after ATA creation
-    vault.rwt_mint.copy_from_slice(ctx.accounts.rwt_mint.address().as_ref());
-    vault.authority = initial_authority;
-    vault.pending_authority = [0u8; 32];
-    vault.has_pending = false;
-    vault.manager = [0u8; 32]; // zeroed — set via update_vault_manager before Layer 6
-    vault.pause_authority = pause_authority;
-    vault.mint_paused = false;
-    vault.areal_fee_destination = areal_fee_destination;
-    vault.bump = vault_bump;
+    // Initialize the vault fields in a scope that drops the RwtVault guard
+    // before the ATA Create CPI below. That CPI passes the rwt_vault account as
+    // the `wallet` (ATA owner), so the checked invoke would reject it while the
+    // account is still mutably borrowed. capital_accumulator_ata is written in a
+    // SECOND scoped re-load AFTER the CPI (Pattern D).
+    {
+        let mut vault = RwtVault::init(ctx.accounts.rwt_vault, ctx.program_id)?;
+        vault.total_invested_capital = 0;
+        vault.total_rwt_supply = 0;
+        vault.nav_book_value = INITIAL_NAV;
+        vault.capital_accumulator_ata = [0u8; 32]; // set after ATA creation
+        vault.rwt_mint.copy_from_slice(ctx.accounts.rwt_mint.address().as_ref());
+        vault.authority = initial_authority;
+        vault.pending_authority = [0u8; 32];
+        vault.has_pending = false;
+        vault.manager = [0u8; 32]; // zeroed — set via update_vault_manager before Layer 6
+        vault.pause_authority = pause_authority;
+        vault.mint_paused = false;
+        vault.areal_fee_destination = areal_fee_destination;
+        vault.bump = vault_bump;
+    } // RwtVault guard dropped — borrow flag released before the ATA Create CPI.
 
     // --- Create Capital Accumulator USDC ATA (owned by vault PDA) ---
+    // The vault guard was dropped above, so passing rwt_vault as the ATA wallet
+    // here is accepted by the checked invoke.
     arlex_lang::associated_token::instructions::Create {
         funding_account: ctx.accounts.deployer,
         account: ctx.accounts.capital_accumulator_ata,
@@ -136,13 +145,18 @@ pub fn handler(
         token_program: ctx.accounts.token_program,
     }.invoke()?;
 
-    // Store the ATA address in vault state
-    vault.capital_accumulator_ata.copy_from_slice(
-        ctx.accounts.capital_accumulator_ata.address().as_ref(),
-    );
+    // Store the ATA address in vault state — Pattern D: re-borrow the vault mut
+    // now that the CPI has returned, then write the now-known ATA address.
+    {
+        let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+        vault.capital_accumulator_ata.copy_from_slice(
+            ctx.accounts.capital_accumulator_ata.address().as_ref(),
+        );
+    }
 
     // --- Initialize RwtDistributionConfig ---
-    let config = RwtDistributionConfig::init(ctx.accounts.dist_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI follows.
+    let mut config = RwtDistributionConfig::init(ctx.accounts.dist_config, ctx.program_id)?;
     config.book_value_bps = DEFAULT_BOOK_VALUE_BPS;
     config.liquidity_bps = DEFAULT_LIQUIDITY_BPS;
     config.protocol_revenue_bps = DEFAULT_PROTOCOL_REVENUE_BPS;

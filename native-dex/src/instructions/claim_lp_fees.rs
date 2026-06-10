@@ -155,7 +155,11 @@ pub(crate) fn claim_lp_fees_internal<'info>(
 
     // SECURITY: LpPosition must belong to THIS pool (prevents cross-pool
     // claim with a stale snapshot from another pool's accumulator).
-    let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
+    // `mut` binding: snapshot writes go through the guard's DerefMut. The
+    // lp_position account is NOT passed into the pool-PDA-signed Transfer CPIs
+    // below (only pool_state, held via the non-engaging `load`, is the
+    // authority), so the guard may stay live across the transfers.
+    let mut lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
     if lp.pool != pool_key {
         return Err(ProgramError::from(DexError::InvalidLpPosition));
     }

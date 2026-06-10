@@ -31,7 +31,8 @@ pub struct UnpauseEarn<'info> {
 }
 
 pub fn pause_handler(ctx: Context<PauseEarn>) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding: is_paused write goes through the guard's DerefMut. No CPI.
+    let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // Manual check: signer must be pause_authority (not authority — different role).
     if ctx.accounts.pause_authority.address().as_ref() != config.pause_authority.as_ref() {
@@ -51,7 +52,8 @@ pub fn pause_handler(ctx: Context<PauseEarn>) -> Result<()> {
 }
 
 pub fn unpause_handler(ctx: Context<UnpauseEarn>) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding: is_paused write goes through the guard's DerefMut. No CPI.
+    let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     if ctx.accounts.pause_authority.address().as_ref() != config.pause_authority.as_ref() {
         return Err(ProgramError::from(EarnError::UnauthorizedPause));

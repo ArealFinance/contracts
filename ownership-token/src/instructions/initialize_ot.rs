@@ -149,53 +149,70 @@ pub fn handler(
     let mut areal_fee_destination = [0u8; 32];
     areal_fee_destination.copy_from_slice(ctx.accounts.areal_fee_destination_account.address().as_ref());
 
+    // Each init is scoped to its own block so the RAII guard drops immediately
+    // after the writes — releasing every borrow flag before the CPIs below. In
+    // particular the Revenue USDC ATA Create CPI passes revenue_account as the
+    // ATA wallet, which the checked invoke would reject while that account is
+    // still mutably borrowed. No init account is written after the CPIs, so no
+    // re-load is needed.
+
     // --- Initialize OtConfig (canonical bump from find_program_address) ---
-    let ot_config = OtConfig::init(ctx.accounts.ot_config, ctx.program_id)?;
-    ot_config.ot_mint.copy_from_slice(ot_mint_ref);
-    ot_config.name = name;
-    ot_config.symbol = symbol;
-    ot_config.decimals = decimals;
-    ot_config.total_minted = 0;
-    ot_config.uri = uri;
-    ot_config.bump = ot_config_bump;
+    {
+        let mut ot_config = OtConfig::init(ctx.accounts.ot_config, ctx.program_id)?;
+        ot_config.ot_mint.copy_from_slice(ot_mint_ref);
+        ot_config.name = name;
+        ot_config.symbol = symbol;
+        ot_config.decimals = decimals;
+        ot_config.total_minted = 0;
+        ot_config.uri = uri;
+        ot_config.bump = ot_config_bump;
+    }
 
     // --- Initialize RevenueAccount ---
-    let revenue = RevenueAccount::init(ctx.accounts.revenue_account, ctx.program_id)?;
-    revenue.ot_mint.copy_from_slice(ot_mint_ref);
-    revenue.revenue_token_account.copy_from_slice(
-        ctx.accounts.revenue_token_account.address().as_ref()
-    );
-    revenue.total_distributed = 0;
-    revenue.distribution_count = 0;
-    revenue.last_distribution_ts = 0;
-    revenue.min_distribution_amount = MIN_DISTRIBUTION_AMOUNT;
-    revenue.is_distributing = false;
-    revenue.bump = revenue_bump;
+    {
+        let mut revenue = RevenueAccount::init(ctx.accounts.revenue_account, ctx.program_id)?;
+        revenue.ot_mint.copy_from_slice(ot_mint_ref);
+        revenue.revenue_token_account.copy_from_slice(
+            ctx.accounts.revenue_token_account.address().as_ref()
+        );
+        revenue.total_distributed = 0;
+        revenue.distribution_count = 0;
+        revenue.last_distribution_ts = 0;
+        revenue.min_distribution_amount = MIN_DISTRIBUTION_AMOUNT;
+        revenue.is_distributing = false;
+        revenue.bump = revenue_bump;
+    }
 
     // --- Initialize RevenueConfig ---
-    let rev_config = RevenueConfig::init(ctx.accounts.revenue_config, ctx.program_id)?;
-    rev_config.ot_mint.copy_from_slice(ot_mint_ref);
-    for i in 0..MAX_DESTINATIONS {
-        rev_config.destinations[i] = RevenueDestination::zeroed();
+    {
+        let mut rev_config = RevenueConfig::init(ctx.accounts.revenue_config, ctx.program_id)?;
+        rev_config.ot_mint.copy_from_slice(ot_mint_ref);
+        for i in 0..MAX_DESTINATIONS {
+            rev_config.destinations[i] = RevenueDestination::zeroed();
+        }
+        rev_config.active_count = 0;
+        rev_config.config_version = 0;
+        rev_config.areal_fee_destination = areal_fee_destination;
+        rev_config.bump = revenue_config_bump;
     }
-    rev_config.active_count = 0;
-    rev_config.config_version = 0;
-    rev_config.areal_fee_destination = areal_fee_destination;
-    rev_config.bump = revenue_config_bump;
 
     // --- Initialize OtGovernance ---
-    let governance = OtGovernance::init(ctx.accounts.ot_governance, ctx.program_id)?;
-    governance.ot_mint.copy_from_slice(ot_mint_ref);
-    governance.authority = initial_authority;
-    governance.pending_authority = [0u8; 32];
-    governance.has_pending = false;
-    governance.is_active = true;
-    governance.bump = governance_bump;
+    {
+        let mut governance = OtGovernance::init(ctx.accounts.ot_governance, ctx.program_id)?;
+        governance.ot_mint.copy_from_slice(ot_mint_ref);
+        governance.authority = initial_authority;
+        governance.pending_authority = [0u8; 32];
+        governance.has_pending = false;
+        governance.is_active = true;
+        governance.bump = governance_bump;
+    }
 
     // --- Initialize OtTreasury ---
-    let treasury = OtTreasury::init(ctx.accounts.ot_treasury, ctx.program_id)?;
-    treasury.ot_mint.copy_from_slice(ot_mint_ref);
-    treasury.bump = treasury_bump;
+    {
+        let mut treasury = OtTreasury::init(ctx.accounts.ot_treasury, ctx.program_id)?;
+        treasury.ot_mint.copy_from_slice(ot_mint_ref);
+        treasury.bump = treasury_bump;
+    }
 
     // --- Create Revenue USDC ATA (owned by RevenueAccount PDA) ---
     arlex_lang::associated_token::instructions::Create {

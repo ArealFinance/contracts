@@ -27,7 +27,8 @@ pub fn handler(
         return Err(ProgramError::from(YdError::ZeroDestination));
     }
 
-    let config = DistributionConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
+    // `mut` binding: publish_authority write goes through the guard's DerefMut. No CPI.
+    let mut config = DistributionConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
     let old_publish_authority = config.publish_authority;
     config.publish_authority = new_publish_authority;
 

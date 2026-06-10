@@ -74,7 +74,8 @@ pub fn handler(
 
     // Initialise the Nexus singleton. `init` writes the discriminator and
     // returns a typed mutable reference; we then populate the data slots.
-    let nexus = LiquidityNexus::init(ctx.accounts.liquidity_nexus, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut nexus = LiquidityNexus::init(ctx.accounts.liquidity_nexus, ctx.program_id)?;
     nexus.manager = manager;
     nexus.total_deposited_usdc = 0;
     nexus.total_deposited_rwt = 0;

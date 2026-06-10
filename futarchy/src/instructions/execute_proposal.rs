@@ -33,8 +33,12 @@ pub fn handler(ctx: Context<ExecuteProposal>) -> Result<()> {
     }
 
     // Manual discriminator validation (no has_one, permissionless)
+    // `config` is held via the non-engaging read-only load, so passing the config
+    // AccountView into the OT CPI (as the governance signer) is accepted. The
+    // proposal account is NOT passed into that CPI, so its mut guard may stay live
+    // across the CPI; `let mut` is required because status/executed_ts are written.
     let config = FutarchyConfig::load(ctx.accounts.config, ctx.program_id)?;
-    let proposal = Proposal::load_mut(ctx.accounts.proposal, ctx.program_id)?;
+    let mut proposal = Proposal::load_mut(ctx.accounts.proposal, ctx.program_id)?;
 
     // SECURITY (M-3): Validate config PDA derives from ["futarchy_config", ot_mint]
     let (expected_config, _) = arlex_lang::find_program_address(

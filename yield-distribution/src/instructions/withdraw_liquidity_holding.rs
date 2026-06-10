@@ -238,7 +238,10 @@ pub fn handler(ctx: Context<WithdrawLiquidityHolding>, amount: u64) -> Result<()
     let now = clock.unix_timestamp;
     let slot = clock.slot;
     let cumulative_withdrawn_after: u64 = {
-        let holding = LiquidityHolding::load_mut(ctx.accounts.liquidity_holding, ctx.program_id)?;
+        // `mut` binding: counter writes go through the guard's DerefMut. This
+        // re-borrow is AFTER both CPIs returned (CEI), so no CPI follows the
+        // guard — the PDA-signed CPIs above used a read-only load + seed slice.
+        let mut holding = LiquidityHolding::load_mut(ctx.accounts.liquidity_holding, ctx.program_id)?;
         holding.total_withdrawn = holding
             .total_withdrawn
             .checked_add(amount)

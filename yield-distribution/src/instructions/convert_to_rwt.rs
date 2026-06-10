@@ -396,8 +396,11 @@ pub fn handler(
     // ── 11. State mutations BEFORE the outbound transfers ─────────
     let now = Clock::get()?.unix_timestamp;
     let (total_funded_after, locked_vested_after) = {
-        let dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
-        vesting::lock_vesting(dist, now)?;
+        // `mut` binding + `&mut *dist`: the guard drops at the end of this scope,
+        // before the PDA-signed transfers (signed by accumulator, not
+        // distributor); the helper takes a by-value `&mut MerkleDistributor`.
+        let mut dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
+        vesting::lock_vesting(&mut *dist, now)?;
         dist.total_funded = dist
             .total_funded
             .checked_add(net_rwt)

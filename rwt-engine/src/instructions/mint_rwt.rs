@@ -42,7 +42,14 @@ pub struct MintRwt<'info> {
 }
 
 pub fn handler(ctx: Context<MintRwt>, amount: u64, min_rwt_out: u64) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // CHECKS + EFFECTS in a scope that drops the RwtVault borrow guard before
+    // the CPIs below. The rwt_vault PDA is passed into the MintTo CPI as the
+    // mint_authority signer, which the checked invoke rejects while the account
+    // is still mutably borrowed. Copy out the bump and computed amounts; the
+    // guard's Drop releases the borrow flag at the end of this block.
+    let (dao_fee, vault_fee, net_deposit, rwt_out, nav_after, vault_bump);
+    {
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     // --- Checks ---
     if vault.mint_paused {
@@ -100,14 +107,14 @@ pub fn handler(ctx: Context<MintRwt>, amount: u64, min_rwt_out: u64) -> Result<(
     let fee_total = arlex_lang::math::mul_div_u64(amount, MINT_FEE_BPS, BPS_DENOMINATOR)
         .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
     // N-11: checked_div(2) can't fail for u64 / 2; use arithmetic shift for clarity and CU.
-    let dao_fee = fee_total >> 1;
-    let vault_fee = fee_total.checked_sub(dao_fee)
+    dao_fee = fee_total >> 1;
+    vault_fee = fee_total.checked_sub(dao_fee)
         .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
-    let net_deposit = amount.checked_sub(fee_total)
+    net_deposit = amount.checked_sub(fee_total)
         .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
 
     // RWT output: net_deposit * NAV_SCALE / nav
-    let rwt_out = arlex_lang::math::mul_div_u64(net_deposit, NAV_SCALE, nav)
+    rwt_out = arlex_lang::math::mul_div_u64(net_deposit, NAV_SCALE, nav)
         .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
 
     // SECURITY: reject mint that would produce 0 RWT (user pays fee, gets nothing)
@@ -135,7 +142,11 @@ pub fn handler(ctx: Context<MintRwt>, amount: u64, min_rwt_out: u64) -> Result<(
         .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
     vault.nav_book_value = calculate_nav(vault.total_invested_capital, vault.total_rwt_supply)?;
 
-    let nav_after = vault.nav_book_value;
+    nav_after = vault.nav_book_value;
+
+    // Copy out the bump for the MintTo signer below.
+    vault_bump = vault.bump;
+    } // RwtVault guard dropped here — borrow flag released before the CPIs.
 
     // --- Interactions: CPIs ---
 
@@ -159,8 +170,11 @@ pub fn handler(ctx: Context<MintRwt>, amount: u64, min_rwt_out: u64) -> Result<(
         }.invoke()?;
     }
 
-    // 3. Vault PDA mints RWT to user
-    let bump = [vault.bump];
+    // 3. Vault PDA mints RWT to user.
+    // The RwtVault borrow guard was dropped at the end of the CHECKS+EFFECTS
+    // block above, so passing rwt_vault as the mint_authority signer here is
+    // accepted by the checked invoke (no live AccountRefMut on this account).
+    let bump = [vault_bump];
     let seeds = [
         Seed::from(b"rwt_vault" as &[u8]),
         Seed::from(bump.as_ref()),

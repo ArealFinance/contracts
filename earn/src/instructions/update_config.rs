@@ -60,7 +60,8 @@ pub fn handler(
     min_mint_amount: u64,
     dao_fee_destination: [u8; 32],
 ) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---
     validate_update_config_inputs(mint_fee_bps, min_mint_amount, dao_fee_destination)?;

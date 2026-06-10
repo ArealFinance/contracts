@@ -146,7 +146,9 @@ pub fn handler(
     // 6. Active-gate + counter bump. Scoped block so the mut handle does not
     //    outlive the emit step; effects-only handler — no CPI to interleave.
     let new_total: u64 = {
-        let nexus = LiquidityNexus::load_mut(
+        // `mut` binding: counter writes go through the guard's DerefMut.
+        // Effects-only handler — no CPI to interleave.
+        let mut nexus = LiquidityNexus::load_mut(
             ctx.accounts.liquidity_nexus,
             ctx.program_id,
         )?;

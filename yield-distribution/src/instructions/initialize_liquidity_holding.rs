@@ -68,20 +68,25 @@ pub fn handler(ctx: Context<InitializeLiquidityHolding>) -> Result<()> {
     // `init` Arlex constraint above guarantees this account is freshly
     // allocated; the `initialized` flag below is a defense-in-depth guard
     // so that any future replay path is caught explicitly.
-    let holding = LiquidityHolding::init(ctx.accounts.liquidity_holding, ctx.program_id)?;
-    if holding.initialized {
-        return Err(ProgramError::from(YdError::LiquidityHoldingAlreadyInitialized));
-    }
-    holding.bump = holding_bump;
-    holding.initialized = true;
-    holding.total_received = 0;
-    holding.total_withdrawn = 0;
-    holding.last_funded_slot = 0;
-    // Layer 9 R20 — zero-init the per-drain tracking slots carved out of the
-    // Layer 8 32-byte `_reserved` block. SPACE / data layout unchanged.
-    holding.last_withdrawn_slot = 0;
-    holding.last_withdrawn_amount = 0;
-    holding._reserved = [0u8; 16];
+    // Scope the init so the liquidity_holding guard drops before the ATA Create
+    // CPI below, which passes the liquidity_holding account as the ATA wallet.
+    // No holding fields are written after the CPI, so no re-load is needed.
+    {
+        let mut holding = LiquidityHolding::init(ctx.accounts.liquidity_holding, ctx.program_id)?;
+        if holding.initialized {
+            return Err(ProgramError::from(YdError::LiquidityHoldingAlreadyInitialized));
+        }
+        holding.bump = holding_bump;
+        holding.initialized = true;
+        holding.total_received = 0;
+        holding.total_withdrawn = 0;
+        holding.last_funded_slot = 0;
+        // Layer 9 R20 — zero-init the per-drain tracking slots carved out of the
+        // Layer 8 32-byte `_reserved` block. SPACE / data layout unchanged.
+        holding.last_withdrawn_slot = 0;
+        holding.last_withdrawn_amount = 0;
+        holding._reserved = [0u8; 16];
+    } // liquidity_holding guard dropped — released before the ATA Create CPI.
 
     // --- Create RWT ATA (wallet = liquidity_holding PDA) ---
     //

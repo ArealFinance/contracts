@@ -62,89 +62,100 @@ pub struct MintRwt<'info> {
 }
 
 pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // CHECKS + EFFECTS in a scope that drops the EarnConfig borrow guard before
+    // the CPIs below. The earn_config PDA is passed into the MintTo CPI as the
+    // mint_authority signer, which the checked invoke rejects while the account
+    // is still mutably borrowed. Copy out the bump and computed amounts; the
+    // guard's Drop releases the borrow flag at the end of this block.
+    let (fee, rwt_out, nav_after, config_bump);
+    {
+        let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
-    // --- Checks ---
-    if config.is_paused {
-        return Err(ProgramError::from(EarnError::EarnPaused));
-    }
-    if usdc_amount == 0 {
-        return Err(ProgramError::from(EarnError::ZeroAmount));
-    }
-    if usdc_amount < config.min_mint_amount {
-        return Err(ProgramError::from(EarnError::BelowMinMint));
-    }
-    if min_rwt_out == 0 {
-        return Err(ProgramError::from(EarnError::ZeroSlippage));
-    }
+        // --- Checks ---
+        if config.is_paused {
+            return Err(ProgramError::from(EarnError::EarnPaused));
+        }
+        if usdc_amount == 0 {
+            return Err(ProgramError::from(EarnError::ZeroAmount));
+        }
+        if usdc_amount < config.min_mint_amount {
+            return Err(ProgramError::from(EarnError::BelowMinMint));
+        }
+        if min_rwt_out == 0 {
+            return Err(ProgramError::from(EarnError::ZeroSlippage));
+        }
 
-    // Validate accounts match config state.
-    if ctx.accounts.rwt_mint.address().as_ref() != config.rwt_mint.as_ref() {
-        return Err(ProgramError::from(EarnError::InvalidRwtMint));
-    }
-    if ctx.accounts.basket_vault.address().as_ref() != config.basket_vault.as_ref() {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
-    if ctx.accounts.dao_fee_destination.address().as_ref() != config.dao_fee_destination.as_ref() {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
+        // Validate accounts match config state.
+        if ctx.accounts.rwt_mint.address().as_ref() != config.rwt_mint.as_ref() {
+            return Err(ProgramError::from(EarnError::InvalidRwtMint));
+        }
+        if ctx.accounts.basket_vault.address().as_ref() != config.basket_vault.as_ref() {
+            return Err(ProgramError::from(EarnError::InvalidTokenAccount));
+        }
+        if ctx.accounts.dao_fee_destination.address().as_ref() != config.dao_fee_destination.as_ref() {
+            return Err(ProgramError::from(EarnError::InvalidTokenAccount));
+        }
 
-    // SECURITY: validate token-account mints (defense-in-depth; SPL also checks).
-    // user_usdc, basket_vault, dao_fee_destination must all hold USDC.
-    let deposit_mint = read_token_account_mint(ctx.accounts.user_usdc)?;
-    if deposit_mint != config.usdc_mint {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
-    let basket_mint = read_token_account_mint(ctx.accounts.basket_vault)?;
-    if basket_mint != config.usdc_mint {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
-    let dao_fee_mint = read_token_account_mint(ctx.accounts.dao_fee_destination)?;
-    if dao_fee_mint != config.usdc_mint {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
-    // user_rwt must hold the earn-RWT mint.
-    let user_rwt_mint = read_token_account_mint(ctx.accounts.user_rwt)?;
-    if user_rwt_mint != config.rwt_mint {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
+        // SECURITY: validate token-account mints (defense-in-depth; SPL also checks).
+        // user_usdc, basket_vault, dao_fee_destination must all hold USDC.
+        let deposit_mint = read_token_account_mint(ctx.accounts.user_usdc)?;
+        if deposit_mint != config.usdc_mint {
+            return Err(ProgramError::from(EarnError::InvalidTokenAccount));
+        }
+        let basket_mint = read_token_account_mint(ctx.accounts.basket_vault)?;
+        if basket_mint != config.usdc_mint {
+            return Err(ProgramError::from(EarnError::InvalidTokenAccount));
+        }
+        let dao_fee_mint = read_token_account_mint(ctx.accounts.dao_fee_destination)?;
+        if dao_fee_mint != config.usdc_mint {
+            return Err(ProgramError::from(EarnError::InvalidTokenAccount));
+        }
+        // user_rwt must hold the earn-RWT mint.
+        let user_rwt_mint = read_token_account_mint(ctx.accounts.user_rwt)?;
+        if user_rwt_mint != config.rwt_mint {
+            return Err(ProgramError::from(EarnError::InvalidTokenAccount));
+        }
 
-    // --- Pricing ---
-    // NAV from current capital + on-chain supply (INITIAL_NAV guard if supply == 0).
-    let supply = read_mint_supply(ctx.accounts.rwt_mint)?;
-    let nav = calculate_nav(config.total_invested_capital, supply)?;
+        // --- Pricing ---
+        // NAV from current capital + on-chain supply (INITIAL_NAV guard if supply == 0).
+        let supply = read_mint_supply(ctx.accounts.rwt_mint)?;
+        let nav = calculate_nav(config.total_invested_capital, supply)?;
 
-    // fee = usdc_amount × mint_fee_bps / 10_000 (charged on top of the body).
-    let fee = arlex_lang::math::mul_div_u64(
-        usdc_amount, config.mint_fee_bps as u64, BPS_DENOMINATOR,
-    ).ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
+        // fee = usdc_amount × mint_fee_bps / 10_000 (charged on top of the body).
+        fee = arlex_lang::math::mul_div_u64(
+            usdc_amount, config.mint_fee_bps as u64, BPS_DENOMINATOR,
+        ).ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
 
-    // rwt_out = (usdc_amount × NAV_SCALE) / nav — u128 BEFORE the multiply.
-    let rwt_out_u128 = (usdc_amount as u128)
-        .checked_mul(NAV_SCALE as u128)
-        .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?
-        / (nav as u128);
-    let rwt_out = u64::try_from(rwt_out_u128)
-        .map_err(|_| ProgramError::from(EarnError::MathOverflow))?;
+        // rwt_out = (usdc_amount × NAV_SCALE) / nav — u128 BEFORE the multiply.
+        let rwt_out_u128 = (usdc_amount as u128)
+            .checked_mul(NAV_SCALE as u128)
+            .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?
+            / (nav as u128);
+        rwt_out = u64::try_from(rwt_out_u128)
+            .map_err(|_| ProgramError::from(EarnError::MathOverflow))?;
 
-    // SECURITY: reject a mint that would produce 0 RWT (user pays, gets nothing).
-    if rwt_out == 0 {
-        return Err(ProgramError::from(EarnError::ZeroRwtOutput));
-    }
-    // SECURITY: slippage protection.
-    if rwt_out < min_rwt_out {
-        return Err(ProgramError::from(EarnError::SlippageExceeded));
-    }
+        // SECURITY: reject a mint that would produce 0 RWT (user pays, gets nothing).
+        if rwt_out == 0 {
+            return Err(ProgramError::from(EarnError::ZeroRwtOutput));
+        }
+        // SECURITY: slippage protection.
+        if rwt_out < min_rwt_out {
+            return Err(ProgramError::from(EarnError::SlippageExceeded));
+        }
 
-    // --- Effects: update config state BEFORE CPIs ---
-    // Only the body grows capital; the fee is DAO revenue, excluded → NAV-neutral.
-    config.total_invested_capital = config.total_invested_capital
-        .checked_add(usdc_amount as u128)
-        .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
+        // --- Effects: update config state BEFORE CPIs ---
+        // Only the body grows capital; the fee is DAO revenue, excluded → NAV-neutral.
+        config.total_invested_capital = config.total_invested_capital
+            .checked_add(usdc_amount as u128)
+            .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
 
-    // nav_after == nav (mint invariant): supply grows by rwt_out, capital by
-    // body, ratio preserved since rwt_out = body × NAV_SCALE / nav.
-    let nav_after = nav;
+        // nav_after == nav (mint invariant): supply grows by rwt_out, capital by
+        // body, ratio preserved since rwt_out = body × NAV_SCALE / nav.
+        nav_after = nav;
+
+        // Copy out the bump for the MintTo signer below.
+        config_bump = config.bump;
+    } // EarnConfig guard dropped here — borrow flag released before the CPIs.
 
     // --- Interactions: CPIs ---
 
@@ -167,7 +178,10 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
     }
 
     // 3. EarnConfig PDA mints RWT to the user.
-    let bump = [config.bump];
+    // The EarnConfig borrow guard was dropped at the end of the CHECKS+EFFECTS
+    // block above, so passing earn_config as the mint_authority signer here is
+    // accepted by the checked invoke (no live AccountRefMut on this account).
+    let bump = [config_bump];
     let seeds = [
         Seed::from(EARN_CONFIG_SEED),
         Seed::from(bump.as_ref()),

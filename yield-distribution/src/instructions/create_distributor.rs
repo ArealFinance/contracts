@@ -106,26 +106,35 @@ pub fn handler(ctx: Context<CreateDistributor>, vesting_period_secs: i64) -> Res
     let now = Clock::get()?.unix_timestamp;
 
     // --- Initialize MerkleDistributor ---
-    let dist = MerkleDistributor::init(ctx.accounts.distributor, ctx.program_id)?;
-    dist.ot_mint = ot_mint_bytes;
-    // reward_vault / accumulator addresses copied after ATA creation
-    dist.reward_vault = [0u8; 32];
-    dist.accumulator.copy_from_slice(ctx.accounts.accumulator.address().as_ref());
-    dist.merkle_root = [0u8; 32];
-    dist.max_total_claim = 0;
-    dist.total_claimed = 0;
-    dist.total_funded = 0;
-    dist.locked_vested = 0;
-    dist.last_fund_ts = now;
-    dist.vesting_period_secs = vesting_period_secs;
-    dist.epoch = 0;
-    dist.is_active = true;
-    dist.bump = distributor_bump;
+    // Scope the init so the distributor guard drops before the ATA Create CPI
+    // below, which passes the distributor account as the ATA wallet. reward_vault
+    // is written in a re-load_mut AFTER the CPIs (Pattern D).
+    {
+        let mut dist = MerkleDistributor::init(ctx.accounts.distributor, ctx.program_id)?;
+        dist.ot_mint = ot_mint_bytes;
+        // reward_vault / accumulator addresses copied after ATA creation
+        dist.reward_vault = [0u8; 32];
+        dist.accumulator.copy_from_slice(ctx.accounts.accumulator.address().as_ref());
+        dist.merkle_root = [0u8; 32];
+        dist.max_total_claim = 0;
+        dist.total_claimed = 0;
+        dist.total_funded = 0;
+        dist.locked_vested = 0;
+        dist.last_fund_ts = now;
+        dist.vesting_period_secs = vesting_period_secs;
+        dist.epoch = 0;
+        dist.is_active = true;
+        dist.bump = distributor_bump;
+    } // distributor guard dropped — released before the reward-vault ATA Create.
 
     // --- Initialize Accumulator ---
-    let acc = Accumulator::init(ctx.accounts.accumulator, ctx.program_id)?;
-    acc.ot_mint = ot_mint_bytes;
-    acc.bump = accumulator_bump;
+    // Scope the init so the accumulator guard drops before its ATA Create CPI
+    // below (which passes the accumulator account as the ATA wallet).
+    {
+        let mut acc = Accumulator::init(ctx.accounts.accumulator, ctx.program_id)?;
+        acc.ot_mint = ot_mint_bytes;
+        acc.bump = accumulator_bump;
+    } // accumulator guard dropped — released before the accumulator ATA Create.
 
     // --- Create Reward Vault RWT ATA (wallet = distributor PDA) ---
     arlex_lang::associated_token::instructions::Create {
@@ -149,9 +158,13 @@ pub fn handler(ctx: Context<CreateDistributor>, vesting_period_secs: i64) -> Res
     }
     .invoke()?;
 
-    // Persist reward_vault address into distributor state.
-    dist.reward_vault
-        .copy_from_slice(ctx.accounts.reward_vault.address().as_ref());
+    // Persist reward_vault address into distributor state — Pattern D: re-borrow
+    // the distributor mut now that the ATA CPIs have returned.
+    {
+        let mut dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
+        dist.reward_vault
+            .copy_from_slice(ctx.accounts.reward_vault.address().as_ref());
+    }
 
     // --- Emit ---
     let reward_vault_bytes = {

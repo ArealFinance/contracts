@@ -125,7 +125,10 @@ pub fn handler(
         if !nexus.is_active {
             return Err(ProgramError::from(DexError::NexusNotActive));
         }
-        assert_manager(nexus, ctx.accounts.manager)?;
+        // `&*nexus`: Deref through the guard yields the `&LiquidityNexus` the
+        // helper expects. The guard is scoped to this block and drops before the
+        // PDA-signed swap CPIs below (nexus is the inbound-transfer authority).
+        assert_manager(&*nexus, ctx.accounts.manager)?;
         nexus.bump
     };
 

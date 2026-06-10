@@ -61,7 +61,8 @@ pub fn handler(
         return Err(ProgramError::from(DexError::InvalidFeeDestination));
     }
 
-    let config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
+    // `mut` binding: field write goes through the guard's DerefMut. No CPI.
+    let mut config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
 
     // Capture the OLD destination for the event so observers can verify
     // the rotation off-chain (audit trail).

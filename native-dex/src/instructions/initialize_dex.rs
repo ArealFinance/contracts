@@ -52,7 +52,8 @@ pub fn handler(
     let deployer_key = crate::validation::pubkey_bytes(ctx.accounts.deployer);
 
     // --- Initialize DexConfig ---
-    let config = DexConfig::init(ctx.accounts.dex_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut config = DexConfig::init(ctx.accounts.dex_config, ctx.program_id)?;
     config.authority = deployer_key;
     config.pending_authority = [0u8; 32];
     config.has_pending = false;
@@ -65,7 +66,8 @@ pub fn handler(
     config.bump = config_bump;
 
     // --- Initialize PoolCreators (deployer auto-added as first creator) ---
-    let creators = PoolCreators::init(ctx.accounts.pool_creators, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut creators = PoolCreators::init(ctx.accounts.pool_creators, ctx.program_id)?;
     creators.authority = deployer_key;
     creators.creators = [[0u8; 32]; 10];
     creators.creators[0] = deployer_key;

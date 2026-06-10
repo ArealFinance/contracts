@@ -272,7 +272,11 @@ pub fn handler(
     //     (convert_to_rwt funded the YD reward vault); compounding the
     //     backing on a constant supply lifts NAV mechanically.
     let (nav_before, nav_after) = {
-        let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+        // `mut` binding: capital/NAV writes go through the guard's DerefMut. The
+        // guard is scoped to this block and drops before the PDA-signed Transfers
+        // below (rwt_vault is the transfer authority). Seeds were copied to
+        // `vault_seeds` earlier via a read-only load. (Pattern C.)
+        let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
         // Recompute NAV from current state (defence-in-depth — never trust the
         // cached `vault.nav_book_value` field for math; mirror the pattern

@@ -121,7 +121,10 @@ pub fn handler(
     //    re-enter this program — defence-in-depth against future CPIs landing
     //    in this handler.
     let new_total: u64 = {
-        let nexus = LiquidityNexus::load_mut(
+        // `mut` binding: counter writes go through the guard's DerefMut. The
+        // guard is scoped to this block and drops before the Transfer CPI (which
+        // the depositor signs — the nexus account is not the CPI authority).
+        let mut nexus = LiquidityNexus::load_mut(
             ctx.accounts.liquidity_nexus,
             ctx.program_id,
         )?;

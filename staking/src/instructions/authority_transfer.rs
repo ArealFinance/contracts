@@ -28,7 +28,8 @@ pub fn propose_handler(
     ctx: Context<ProposeAuthorityTransfer>,
     new_authority: [u8; 32],
 ) -> Result<()> {
-    let config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
     if ctx.accounts.authority.address().as_ref() != config.authority.as_ref() {
         return Err(ProgramError::from(StakingError::Unauthorized));
@@ -66,7 +67,8 @@ pub struct AcceptAuthorityTransfer<'info> {
 }
 
 pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
-    let config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
     if !config.has_pending {
         return Err(ProgramError::from(StakingError::NoPendingAuthority));

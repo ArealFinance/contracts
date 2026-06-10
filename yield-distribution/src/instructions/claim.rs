@@ -77,7 +77,11 @@ pub fn handler(
         return Err(ProgramError::from(YdError::SystemPaused));
     }
 
-    let dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
+    // `mut` binding: total_claimed write goes through the guard's DerefMut. The
+    // distributor PDA is the signing authority of the outbound reward Transfer,
+    // so this guard is explicitly dropped before that CPI (see below). The
+    // intermediate CreateAccount CPI does not include the distributor account.
+    let mut dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
     if !dist.is_active {
         return Err(ProgramError::from(YdError::DistributorNotActive));
     }
@@ -162,14 +166,20 @@ pub fn handler(
             Seed::from(cs_bump_arr.as_ref()),
         ])])?;
 
-        let cs = ClaimStatus::init(cs_account, ctx.program_id)?;
+        // `mut` binding: field writes go through the guard's DerefMut. The guard
+        // drops at the end of this block (the account was created by the CPI
+        // above); it is re-loaded mut just below.
+        let mut cs = ClaimStatus::init(cs_account, ctx.program_id)?;
         cs.claimant = claimant_bytes;
         cs.distributor = distributor_bytes;
         cs.claimed_amount = 0;
         cs.bump = cs_bump;
     }
 
-    let cs = ClaimStatus::load_mut(cs_account, ctx.program_id)?;
+    // `mut` binding: claimed_amount write goes through DerefMut. The claim_status
+    // account is NOT passed into the reward Transfer CPI below, so the guard may
+    // stay live across it.
+    let mut cs = ClaimStatus::load_mut(cs_account, ctx.program_id)?;
     // Replay defense: make sure the PDA we just loaded actually matches the claimant/distributor.
     if cs.claimant != claimant_bytes || cs.distributor != distributor_bytes {
         return Err(ProgramError::from(YdError::InvalidClaimStatus));
@@ -178,7 +188,7 @@ pub fn handler(
     // --- Vesting math ---
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
-    let total_vested = vesting::calculate_total_vested(dist, now)?;
+    let total_vested = vesting::calculate_total_vested(&*dist, now)?;
     let claimable = vesting::calculate_claimable(
         total_vested,
         cumulative_amount,
@@ -216,6 +226,11 @@ pub fn handler(
 
     let cumulative_claimed = cs.claimed_amount;
     let dist_bump = dist.bump;
+
+    // DROP the distributor guard before the CPI: the distributor PDA is the
+    // Transfer authority, which the checked invoke rejects while the account is
+    // still mutably borrowed. (`ot_mint_bytes` and `dist_bump` were copied out.)
+    drop(dist);
 
     // --- Interactions: reward_vault -> claimant_token, signed by distributor PDA ---
     let bump_arr = [dist_bump];
