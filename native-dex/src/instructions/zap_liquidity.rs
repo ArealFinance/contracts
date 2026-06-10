@@ -143,7 +143,13 @@ pub(crate) fn zap_liquidity_internal<'info>(
     authority_signer_seeds: Option<&[Signer]>,
 ) -> Result<()> {
     let config = DexConfig::load(accounts.dex_config, program_id)?;
-    let pool = PoolState::load_mut(accounts.pool_state, program_id)?;
+    // arlex v0.1.2: PoolState::load_mut returns an RAII guard. The pool_state PDA
+    // is the signing authority of the outbound pool-PDA-signed CPIs at the end of
+    // this handler (auto_claim_lp_fees, protocol-fee, ot-fee), so the guard MUST
+    // drop before that section. It stays live through the virtual-swap + effects
+    // (helpers receive `&mut *pool`); the pool seed material is copied out and the
+    // guard is explicitly dropped before the interactions. (Pattern C/D.)
+    let mut pool = PoolState::load_mut(accounts.pool_state, program_id)?;
 
     // --- Checks ---
     if !config.is_active {
@@ -284,7 +290,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
                         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_a = pool.reserve_a.checked_sub(swap_out)
                         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
-                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(&mut *pool, fees.fee_lp, false)?;
 
                     // Inbound debit on the RWT (B) side must include fee_lp +
                     // fee_protocol + fee_ot_treasury. Equivalent to
@@ -304,7 +310,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     // Subtract FULL gross_out (fee_lp stays in vault, tracked via accumulator).
                     pool.reserve_a = pool.reserve_a.checked_sub(gross_out_for_fees)
                         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
-                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(&mut *pool, fees.fee_lp, true)?;
 
                     rwt_extra_a = 0;
                     rwt_extra_b = 0;
@@ -357,7 +363,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
                         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
                     pool.reserve_b = pool.reserve_b.checked_sub(swap_out)
                         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
-                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, true)?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(&mut *pool, fees.fee_lp, true)?;
 
                     // Inbound debit on the RWT (A) side must include fee_lp +
                     // fee_protocol + fee_ot_treasury.
@@ -375,7 +381,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
                     // Subtract FULL gross_out (fee_lp stays in vault, tracked via accumulator).
                     pool.reserve_b = pool.reserve_b.checked_sub(gross_out_for_fees)
                         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
-                    crate::instructions::swap::accrue_lp_fee_per_share(pool, fees.fee_lp, false)?;
+                    crate::instructions::swap::accrue_lp_fee_per_share(&mut *pool, fees.fee_lp, false)?;
 
                     rwt_extra_a = 0;
                     rwt_extra_b = 0;
@@ -488,7 +494,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
             Seed::from(&[lp_bump]),
         ])])?;
 
-        let lp = LpPosition::init(accounts.lp_position, program_id)?;
+        // `mut` binding: field writes go through the guard's DerefMut. The lp
+        // guard drops at the end of this branch, before the CPI section.
+        let mut lp = LpPosition::init(accounts.lp_position, program_id)?;
         lp.pool = pool_key;
         lp.owner = provider_key;
         lp.shares = shares;
@@ -502,7 +510,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
         lp.fees_claimed_per_share_a = pool.cumulative_fees_per_share_a;
         lp.fees_claimed_per_share_b = pool.cumulative_fees_per_share_b;
     } else {
-        let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
+        // `mut` binding: snapshot/share writes go through the guard's DerefMut.
+        // The lp guard drops at the end of this branch, before the CPI section.
+        let mut lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
         // SECURITY: Verify LpPosition belongs to this provider
         if lp.owner != provider_key {
             return Err(ProgramError::from(DexError::Unauthorized));
@@ -556,6 +566,16 @@ pub(crate) fn zap_liquidity_internal<'info>(
         lp.last_update_ts = clock.unix_timestamp;
     }
 
+    // Copy out the PDA seed material + RWT-side flag, then DROP the pool guard
+    // so the outbound pool-PDA-signed CPIs below (auto_claim_lp_fees, protocol
+    // fee, ot fee — all with authority = pool_state) are accepted by the checked
+    // invoke (no live AccountRefMut on pool_state).
+    let pool_bump = pool.bump;
+    let pool_token_a_mint = pool.token_a_mint;
+    let pool_token_b_mint = pool.token_b_mint;
+    let rwt_is_side_a = is_rwt_mint(&pool.token_a_mint);
+    drop(pool);
+
     // --- Interactions: transfer tokens from provider to vaults ---
     // Transfer the total user input (amount_<side> + rwt_extra_<side>), the
     // internal swap is virtual. Fee-on-top (docs/contracts/native-dex.mdx:534-535):
@@ -600,7 +620,7 @@ pub(crate) fn zap_liquidity_internal<'info>(
     }
 
     // Transfer protocol fees from vault (RWT side)
-    let pool_bump_arr = [pool.bump];
+    let pool_bump_arr = [pool_bump];
 
     // Layer 10 R46 — auto-claim outbound transfers extracted into a child
     // frame (`auto_claim_lp_fees`, defined in add_liquidity.rs and shared
@@ -614,9 +634,9 @@ pub(crate) fn zap_liquidity_internal<'info>(
         accounts.provider_token_a,
         accounts.provider_token_b,
         accounts.pool_state,
-        &pool.token_a_mint,
-        &pool.token_b_mint,
-        pool.bump,
+        &pool_token_a_mint,
+        &pool_token_b_mint,
+        pool_bump,
         auto_claim_a,
         auto_claim_b,
     )?;
@@ -632,11 +652,11 @@ pub(crate) fn zap_liquidity_internal<'info>(
     }
 
     if fee_protocol_total > 0 {
-        let rwt_vault = if is_rwt_mint(&pool.token_a_mint) { accounts.vault_a } else { accounts.vault_b };
+        let rwt_vault = if rwt_is_side_a { accounts.vault_a } else { accounts.vault_b };
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(pool_bump_arr.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {
@@ -649,11 +669,11 @@ pub(crate) fn zap_liquidity_internal<'info>(
 
     if fee_ot_total > 0 {
         let ot_fee_account = &remaining_accounts[0];
-        let rwt_vault = if is_rwt_mint(&pool.token_a_mint) { accounts.vault_a } else { accounts.vault_b };
+        let rwt_vault = if rwt_is_side_a { accounts.vault_a } else { accounts.vault_b };
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(pool_bump_arr.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {

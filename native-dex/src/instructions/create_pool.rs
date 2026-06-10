@@ -87,7 +87,8 @@ pub fn handler(ctx: Context<CreatePool>) -> Result<()> {
         detect_ot_treasury(ctx.remaining_accounts, &mint_a, &mint_b)?;
 
     // --- StandardCurve-specific PoolState init ---
-    let pool = PoolState::init(ctx.accounts.pool_state, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut pool = PoolState::init(ctx.accounts.pool_state, ctx.program_id)?;
     pool.pool_type = POOL_TYPE_STANDARD;
     pool.token_a_mint = mint_a;
     pool.token_b_mint = mint_b;

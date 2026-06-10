@@ -218,7 +218,10 @@ pub fn handler(
     let permanent_tail_floor_bin = left_anchor_bin - PERMANENT_TAIL_BIN_COUNT;
 
     // --- Master-pool PoolState init ---
-    let pool = PoolState::init(ctx.accounts.pool_state, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. The account
+    // was created by the CreateAccount CPI above (before this init); no CPI
+    // follows.
+    let mut pool = PoolState::init(ctx.accounts.pool_state, ctx.program_id)?;
     pool.pool_type = POOL_TYPE_CONCENTRATED;
     pool.token_a_mint = mint_a;
     pool.token_b_mint = mint_b;
@@ -256,7 +259,8 @@ pub fn handler(
     // 630-bin Monotonic Ladder (CP-1 hotfix 2026-05-17) grows monotonically
     // upward from the permanent tail; the array is structured as
     //   [permanent_tail | gap | active_zone | organic_ask | right-edge buffer].
-    let bins = BinArray::init(ctx.accounts.bin_array, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut bins = BinArray::init(ctx.accounts.bin_array, ctx.program_id)?;
     bins.pool = pool_key;
     for i in 0..MAX_BINS {
         bins.bins[i] = Bin { liquidity_a: 0, liquidity_b: 0 };

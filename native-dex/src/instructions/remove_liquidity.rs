@@ -104,7 +104,24 @@ pub(crate) fn remove_liquidity_internal<'info>(
     shares_to_burn: u128,
     _authority_signer_seeds: Option<&[Signer]>,
 ) -> Result<()> {
-    let pool = PoolState::load_mut(accounts.pool_state, program_id)?;
+    // arlex v0.1.2: scope the PoolState / LpPosition / BinArray mutable borrow
+    // guards to a block so they drop before the pool-PDA-signed Transfer CPIs
+    // (authority = pool_state) and the lp_position.close() below. Copy out every
+    // value the CPIs / close need (amounts, auto-claim payouts, keys, pool
+    // bump/mints, close flag). (Pattern C/D from the migration.)
+    let amount_a: u64;
+    let amount_b: u64;
+    let auto_claim_a: u64;
+    let auto_claim_b: u64;
+    let provider_key: [u8; 32];
+    let pool_key: [u8; 32];
+    let pool_bump: u8;
+    let pool_token_a_mint: [u8; 32];
+    let pool_token_b_mint: [u8; 32];
+    let close_position: bool;
+    let clock = Clock::get()?;
+    {
+    let mut pool = PoolState::load_mut(accounts.pool_state, program_id)?;
 
     // NOTE: remove_liquidity does NOT check pool.is_active — LPs can always exit (by design)
 
@@ -128,8 +145,8 @@ pub(crate) fn remove_liquidity_internal<'info>(
     let cumulative_b = pool.cumulative_fees_per_share_b;
 
     // --- Validate LP position ---
-    let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
-    let provider_key = pubkey_bytes(accounts.authority);
+    let mut lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
+    provider_key = pubkey_bytes(accounts.authority);
 
     if lp.owner != provider_key {
         return Err(ProgramError::from(DexError::Unauthorized));
@@ -154,8 +171,8 @@ pub(crate) fn remove_liquidity_internal<'info>(
     let delta_b_q64 = cumulative_b
         .checked_sub(lp.fees_claimed_per_share_b)
         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
-    let auto_claim_a = compute_claimable(delta_a_q64, lp.shares)?;
-    let auto_claim_b = compute_claimable(delta_b_q64, lp.shares)?;
+    auto_claim_a = compute_claimable(delta_a_q64, lp.shares)?;
+    auto_claim_b = compute_claimable(delta_b_q64, lp.shares)?;
     // Advance the snapshot so subsequent claim_lp_fees / partial-close calls
     // observe zero delta on the remaining shares. Effects-before-CPI; the
     // vault-side transfer below moves the realised value to the provider.
@@ -163,7 +180,7 @@ pub(crate) fn remove_liquidity_internal<'info>(
     lp.fees_claimed_per_share_b = cumulative_b;
 
     // --- Calculate proportional withdrawal ---
-    let (amount_a, amount_b) = calculate_remove_amounts(
+    (amount_a, amount_b) = calculate_remove_amounts(
         shares_to_burn, pool.reserve_a, pool.reserve_b, pool.total_lp_shares,
     )?;
 
@@ -180,9 +197,11 @@ pub(crate) fn remove_liquidity_internal<'info>(
         if remaining_accounts[0].address().as_ref() != expected_bin_pda.as_ref() {
             return Err(ProgramError::InvalidSeeds);
         }
-        let bin_array = BinArray::load_mut(&remaining_accounts[0], program_id)?;
+        // `&mut *bin_array`: DerefMut through the guard yields the `&mut BinArray`
+        // the helper expects. The guard drops at the end of this block.
+        let mut bin_array = BinArray::load_mut(&remaining_accounts[0], program_id)?;
         concentrated::proportional_bin_remove(
-            bin_array,
+            &mut *bin_array,
             shares_to_burn,
             pool.total_lp_shares,
         )?;
@@ -199,21 +218,27 @@ pub(crate) fn remove_liquidity_internal<'info>(
     lp.shares = lp.shares.checked_sub(shares_to_burn)
         .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
-    let clock = Clock::get()?;
     lp.last_update_ts = clock.unix_timestamp;
 
     // If shares == 0, close the LpPosition and return rent to provider
-    let close_position = lp.shares == 0;
+    close_position = lp.shares == 0;
+
+    // Copy out the pool key + PDA seed material for the pool-PDA-signed CPIs.
+    pool_key = pubkey_bytes(accounts.pool_state);
+    pool_bump = pool.bump;
+    pool_token_a_mint = pool.token_a_mint;
+    pool_token_b_mint = pool.token_b_mint;
+    } // PoolState + LpPosition (+ BinArray) guards dropped — flags released
+      // before the pool-PDA-signed Transfers and the lp_position.close().
 
     // --- Interactions: transfer tokens from vaults to provider ---
-    let pool_key = pubkey_bytes(accounts.pool_state);
-    let bump = [pool.bump];
+    let bump = [pool_bump];
 
     if amount_a > 0 {
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(bump.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {
@@ -227,8 +252,8 @@ pub(crate) fn remove_liquidity_internal<'info>(
     if amount_b > 0 {
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(bump.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {
@@ -248,8 +273,8 @@ pub(crate) fn remove_liquidity_internal<'info>(
     if auto_claim_a > 0 {
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(bump.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {
@@ -262,8 +287,8 @@ pub(crate) fn remove_liquidity_internal<'info>(
     if auto_claim_b > 0 {
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(bump.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {

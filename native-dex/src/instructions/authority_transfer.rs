@@ -24,7 +24,8 @@ pub fn propose_handler(
     ctx: Context<ProposeAuthorityTransfer>,
     new_authority: [u8; 32],
 ) -> Result<()> {
-    let config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
 
     if new_authority == [0u8; 32] {
         return Err(ProgramError::from(DexError::ZeroAddress));
@@ -65,7 +66,8 @@ pub struct AcceptAuthorityTransfer<'info> {
 }
 
 pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
-    let config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
 
     if !config.has_pending {
         return Err(ProgramError::from(DexError::NoPendingAuthority));
@@ -83,8 +85,8 @@ pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
     config.pending_authority = [0u8; 32];
     config.has_pending = false;
 
-    // Update PoolCreators authority
-    let creators = PoolCreators::load_mut(ctx.accounts.pool_creators, ctx.program_id)?;
+    // Update PoolCreators authority. `mut` binding: write via DerefMut. No CPI.
+    let mut creators = PoolCreators::load_mut(ctx.accounts.pool_creators, ctx.program_id)?;
     creators.authority = new_auth_key;
 
     let clock = Clock::get()?;

@@ -48,7 +48,8 @@ pub fn handler(
     ctx: Context<UpdateNexusManager>,
     new_manager: [u8; 32],
 ) -> Result<()> {
-    let nexus = LiquidityNexus::load_mut(ctx.accounts.liquidity_nexus, ctx.program_id)?;
+    // `mut` binding: manager write goes through the guard's DerefMut. No CPI.
+    let mut nexus = LiquidityNexus::load_mut(ctx.accounts.liquidity_nexus, ctx.program_id)?;
 
     let old_manager = nexus.manager;
     nexus.manager = new_manager;

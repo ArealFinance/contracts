@@ -36,7 +36,8 @@ pub fn handler(
         return Err(ProgramError::from(DexError::InvalidFeeShare));
     }
 
-    let config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = DexConfig::load_mut(ctx.accounts.dex_config, ctx.program_id)?;
 
     // areal_fee_destination and pause_authority remain immutable
     config.base_fee_bps = base_fee_bps;

@@ -32,7 +32,8 @@ pub fn handler(
     wallet: [u8; 32],
     action: u8,
 ) -> Result<()> {
-    let creators = PoolCreators::load_mut(ctx.accounts.pool_creators, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut creators = PoolCreators::load_mut(ctx.accounts.pool_creators, ctx.program_id)?;
 
     if wallet == [0u8; 32] {
         return Err(ProgramError::from(DexError::ZeroAddress));
@@ -50,8 +51,12 @@ pub fn handler(
             if creators.active_count as usize >= MAX_POOL_CREATORS {
                 return Err(ProgramError::from(DexError::WhitelistFull));
             }
-            // Add at next slot
-            creators.creators[creators.active_count as usize] = wallet;
+            // Add at next slot. Read the index into a temp first: through the
+            // guard's DerefMut, indexing with `creators.active_count` inline
+            // would borrow `*creators` immutably (the index) and mutably (the
+            // slot write) at once (E0502).
+            let next_slot = creators.active_count as usize;
+            creators.creators[next_slot] = wallet;
             creators.active_count += 1;
         }
         ACTION_REMOVE => {
@@ -65,10 +70,14 @@ pub fn handler(
             }
             let idx = found_idx.ok_or_else(|| ProgramError::from(DexError::CreatorNotFound))?;
 
-            // Swap with last and decrement count
+            // Swap with last and decrement count. Read the last slot into a
+            // temp first: through the guard's Deref/DerefMut, a direct
+            // self-index copy (`creators[idx] = creators[last]`) would borrow
+            // `*creators` mutably and immutably at once (E0502).
             let last_idx = (creators.active_count - 1) as usize;
             if idx != last_idx {
-                creators.creators[idx] = creators.creators[last_idx];
+                let last_val = creators.creators[last_idx];
+                creators.creators[idx] = last_val;
             }
             creators.creators[last_idx] = [0u8; 32];
             creators.active_count -= 1;

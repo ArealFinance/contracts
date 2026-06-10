@@ -126,7 +126,14 @@ pub(crate) fn swap_internal<'info>(
     authority_signer_seeds: Option<&[Signer]>,
 ) -> Result<()> {
     let config = DexConfig::load(accounts.dex_config, program_id)?;
-    let pool = PoolState::load_mut(accounts.pool_state, program_id)?;
+    // arlex v0.1.2: PoolState::load_mut returns an RAII guard. The pool_state PDA
+    // is passed into the outbound pool-PDA-signed Transfer CPIs as the signing
+    // authority, so the guard MUST drop before that interaction section. It stays
+    // live through the bin-walk + effects (helpers receive `&mut *pool`), then is
+    // explicitly dropped after the seed material is copied out (see below). The
+    // early mint-route CPI does NOT include pool_state, so holding the guard there
+    // is safe. (Pattern C/D from the migration.)
+    let mut pool = PoolState::load_mut(accounts.pool_state, program_id)?;
 
     // --- Checks ---
     if !config.is_active {
@@ -421,9 +428,11 @@ pub(crate) fn swap_internal<'info>(
             if remaining_accounts[bin_idx].address().as_ref() != expected_bin_pda.as_ref() {
                 return Err(ProgramError::InvalidSeeds);
             }
-            let bin_array = BinArray::load_mut(&remaining_accounts[bin_idx], program_id)?;
+            // `&mut *bin_array`: DerefMut through the guard yields the
+            // `&mut BinArray` the helpers expect.
+            let mut bin_array = BinArray::load_mut(&remaining_accounts[bin_idx], program_id)?;
             // net_input == amount_in (fee-on-top): full amount enters bin walk.
-            let (walk_out, walk_remaining) = concentrated::bin_walk_swap(bin_array, pool.bin_step_bps, net_input, a_to_b)?;
+            let (walk_out, walk_remaining) = concentrated::bin_walk_swap(&mut *bin_array, pool.bin_step_bps, net_input, a_to_b)?;
             amount_out = walk_out;
             pool.active_bin_id = bin_array.active_bin_id;
 
@@ -431,7 +440,7 @@ pub(crate) fn swap_internal<'info>(
             // Layer 9 D28: fee_lp is NOT synced into bins — it lives in the
             // `cumulative_fees_per_share_<side>` accumulator instead, and is
             // explicitly excluded from reserves by the effects step below.
-            concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
+            concentrated::sync_remaining_to_bin(&mut *bin_array, walk_remaining, a_to_b)?;
         } else {
             // Standard path: full amount_in enters the curve (fee-on-top).
             amount_out = constant_product_output(reserve_in, reserve_out, amount_in)?;
@@ -459,8 +468,10 @@ pub(crate) fn swap_internal<'info>(
             if remaining_accounts[bin_idx].address().as_ref() != expected_bin_pda.as_ref() {
                 return Err(ProgramError::InvalidSeeds);
             }
-            let bin_array = BinArray::load_mut(&remaining_accounts[bin_idx], program_id)?;
-            let (walk_out, walk_remaining) = concentrated::bin_walk_swap(bin_array, pool.bin_step_bps, net_input, a_to_b)?;
+            // `&mut *bin_array`: DerefMut through the guard yields the
+            // `&mut BinArray` the helpers expect.
+            let mut bin_array = BinArray::load_mut(&remaining_accounts[bin_idx], program_id)?;
+            let (walk_out, walk_remaining) = concentrated::bin_walk_swap(&mut *bin_array, pool.bin_step_bps, net_input, a_to_b)?;
             gross_out = walk_out;
             pool.active_bin_id = bin_array.active_bin_id;
 
@@ -468,7 +479,7 @@ pub(crate) fn swap_internal<'info>(
             // the RWT vault but is tracked via the per-share accumulator,
             // not via bin liquidity (bins must mirror reserves; reserves
             // exclude fee_lp post-D28).
-            concentrated::sync_remaining_to_bin(bin_array, walk_remaining, a_to_b)?;
+            concentrated::sync_remaining_to_bin(&mut *bin_array, walk_remaining, a_to_b)?;
 
             let fees = calculate_fees(gross_out, pool.fee_bps, config.lp_fee_share_bps, pool.has_ot_treasury)?;
 
@@ -574,7 +585,9 @@ pub(crate) fn swap_internal<'info>(
     // the guard is required there.
     {
         let rwt_is_side_a = (a_to_b && input_is_rwt) || (!a_to_b && !input_is_rwt);
-        accrue_lp_fee_per_share(pool, fee_lp, rwt_is_side_a)?;
+        // `&mut *pool`: DerefMut through the guard yields the `&mut PoolState`
+        // the helper expects.
+        accrue_lp_fee_per_share(&mut *pool, fee_lp, rwt_is_side_a)?;
     }
 
     pool.total_fees_accumulated = pool.total_fees_accumulated
@@ -582,8 +595,15 @@ pub(crate) fn swap_internal<'info>(
         .checked_add(fee_protocol).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?
         .checked_add(fee_ot_treasury).ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
 
-    // --- Interactions: CPIs ---
+    // Copy out the PDA seed material, then DROP the pool guard so the outbound
+    // pool-PDA-signed Transfer CPIs (authority = pool_state) below are accepted
+    // by the checked invoke (no live AccountRefMut on pool_state).
     let pool_bump = [pool.bump];
+    let pool_token_a_mint = pool.token_a_mint;
+    let pool_token_b_mint = pool.token_b_mint;
+    drop(pool);
+
+    // --- Interactions: CPIs ---
 
     // Fee-on-top inbound transfer sizing (docs/contracts/native-dex.mdx:534-535):
     // When the user is selling RWT, the wallet debit is `amount_in + fee_total +
@@ -625,8 +645,8 @@ pub(crate) fn swap_internal<'info>(
     {
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(pool_bump.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {
@@ -642,8 +662,8 @@ pub(crate) fn swap_internal<'info>(
         let rwt_vault = if input_is_rwt { accounts.vault_in } else { accounts.vault_out };
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(pool_bump.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {
@@ -660,8 +680,8 @@ pub(crate) fn swap_internal<'info>(
         let rwt_vault = if input_is_rwt { accounts.vault_in } else { accounts.vault_out };
         let seeds = [
             Seed::from(b"pool" as &[u8]),
-            Seed::from(pool.token_a_mint.as_ref()),
-            Seed::from(pool.token_b_mint.as_ref()),
+            Seed::from(pool_token_a_mint.as_ref()),
+            Seed::from(pool_token_b_mint.as_ref()),
             Seed::from(pool_bump.as_ref()),
         ];
         arlex_lang::token::instructions::Transfer {

@@ -265,8 +265,28 @@ pub(crate) fn add_liquidity_internal<'info>(
     min_shares: u128,
     authority_signer_seeds: Option<&[Signer]>,
 ) -> Result<()> {
+    // arlex v0.1.2: PoolState::load_mut returns an RAII guard whose Drop releases
+    // the borrow flag. The pool_state PDA is passed into the pool-PDA-signed
+    // auto_claim_lp_fees CPI below as the signing authority, which the checked
+    // invoke rejects while the account is still mutably borrowed. Scope the pool
+    // (and LpPosition) mutations to a block that copies out every value the CPIs
+    // need (deposit amounts, shares, keys, pool bump/mints, auto-claim payouts);
+    // both guards drop at the end of the block, releasing the flag before the
+    // interactions. (Pattern C/D from the migration.)
+    let deposit_a: u64;
+    let deposit_b: u64;
+    let shares: u128;
+    let provider_key: [u8; 32];
+    let pool_key: [u8; 32];
+    let pool_bump: u8;
+    let pool_token_a_mint: [u8; 32];
+    let pool_token_b_mint: [u8; 32];
+    let mut auto_claim_a: u64 = 0;
+    let mut auto_claim_b: u64 = 0;
+    let clock = Clock::get()?;
+    {
     let config = DexConfig::load(accounts.dex_config, program_id)?;
-    let pool = PoolState::load_mut(accounts.pool_state, program_id)?;
+    let mut pool = PoolState::load_mut(accounts.pool_state, program_id)?;
 
     // --- Checks ---
     if !config.is_active {
@@ -297,13 +317,13 @@ pub(crate) fn add_liquidity_internal<'info>(
     // transfer when an existing position has pending fees.
     let cumulative_a = pool.cumulative_fees_per_share_a;
     let cumulative_b = pool.cumulative_fees_per_share_b;
-    let pool_bump = pool.bump;
-    let pool_token_a_mint = pool.token_a_mint;
-    let pool_token_b_mint = pool.token_b_mint;
+    pool_bump = pool.bump;
+    pool_token_a_mint = pool.token_a_mint;
+    pool_token_b_mint = pool.token_b_mint;
 
     // --- Calculate LP shares ---
     let is_first = pool.total_lp_shares == 0;
-    let (deposit_a, deposit_b, shares) = if is_first {
+    (deposit_a, deposit_b, shares) = if is_first {
         // First LP: use both amounts directly
         let shares = calculate_lp_shares(amount_a, amount_b, 0, 0, 0, true)?;
         (amount_a, amount_b, shares)
@@ -358,16 +378,13 @@ pub(crate) fn add_liquidity_internal<'info>(
     }
 
     // --- Initialize or update LpPosition ---
-    let provider_key = pubkey_bytes(accounts.authority);
-    let pool_key = pubkey_bytes(accounts.pool_state);
-    let clock = Clock::get()?;
+    provider_key = pubkey_bytes(accounts.authority);
+    pool_key = pubkey_bytes(accounts.pool_state);
 
-    // Layer 9 D29 — auto-claim payout amounts. Populated only on the existing-
-    // position branch when there are pending fees; declared here so the
-    // post-effects pool-PDA-signed outbound transfers (below) have a single
-    // source of truth.
-    let mut auto_claim_a: u64 = 0;
-    let mut auto_claim_b: u64 = 0;
+    // Layer 9 D29 — auto-claim payout amounts (auto_claim_a/b declared in the
+    // outer scope) are populated only on the existing-position branch when there
+    // are pending fees; the post-effects pool-PDA-signed outbound transfers
+    // (after the guard drop) have a single source of truth.
 
     // Check if LpPosition already exists (data_len > 0 means initialized)
     let lp_data_len = accounts.lp_position.data_len();
@@ -385,7 +402,7 @@ pub(crate) fn add_liquidity_internal<'info>(
             &provider_key,
         )?;
 
-        let lp = LpPosition::init(accounts.lp_position, program_id)?;
+        let mut lp = LpPosition::init(accounts.lp_position, program_id)?;
         lp.pool = pool_key;
         lp.owner = provider_key;
         lp.shares = shares;
@@ -399,7 +416,7 @@ pub(crate) fn add_liquidity_internal<'info>(
         lp.fees_claimed_per_share_b = cumulative_b;
     } else {
         // Update existing position
-        let lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
+        let mut lp = LpPosition::load_mut(accounts.lp_position, program_id)?;
         // SECURITY: Verify LpPosition belongs to this provider
         if lp.owner != provider_key {
             return Err(ProgramError::from(DexError::Unauthorized));
@@ -445,6 +462,8 @@ pub(crate) fn add_liquidity_internal<'info>(
             .ok_or_else(|| ProgramError::from(DexError::MathOverflow))?;
         lp.last_update_ts = clock.unix_timestamp;
     }
+    } // PoolState + LpPosition guards dropped here — borrow flags released before
+      // the interactions, in particular the pool-PDA-signed auto_claim_lp_fees.
 
     // --- Interactions: transfer tokens from provider to vaults ---
     // User-signed path: empty signer slice (authority is a transaction signer).

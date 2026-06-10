@@ -38,7 +38,8 @@ pub fn pause_handler(ctx: Context<PausePool>) -> Result<()> {
         return Err(ProgramError::from(DexError::UnauthorizedPause));
     }
 
-    let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
+    // `mut` binding: is_active write goes through the guard's DerefMut. No CPI.
+    let mut pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
 
     // Idempotent
     pool.is_active = false;
@@ -59,7 +60,8 @@ pub fn unpause_handler(ctx: Context<UnpausePool>) -> Result<()> {
         return Err(ProgramError::from(DexError::UnauthorizedPause));
     }
 
-    let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
+    // `mut` binding: is_active write goes through the guard's DerefMut. No CPI.
+    let mut pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
 
     // Idempotent
     pool.is_active = true;

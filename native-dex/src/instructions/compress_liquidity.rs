@@ -117,9 +117,11 @@ pub fn handler(
     //    sum(liquidity_b) across the NEW active zone (modulo rounding
     //    dust folded onto the peak bin).
     let new_active_zone_lower = {
-        let bin_array = BinArray::load_mut(ctx.accounts.bin_array, ctx.program_id)?;
+        // `&mut *bin_array`: DerefMut through the guard yields the
+        // `&mut BinArray` the helper expects.
+        let mut bin_array = BinArray::load_mut(ctx.accounts.bin_array, ctx.program_id)?;
         concentrated::compress_redistribute(
-            bin_array,
+            &mut *bin_array,
             pool_left_anchor,
             pool_last_rebalance,
             new_nav_bin,
@@ -132,7 +134,8 @@ pub fn handler(
     //    is unchanged (capital-neutral). Compress is a pure structural
     //    redistribute on existing pool capital.
     {
-        let pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
+        // `mut` binding: anchor writes go through the guard's DerefMut. No CPI.
+        let mut pool = PoolState::load_mut(ctx.accounts.pool_state, ctx.program_id)?;
         pool.last_rebalance_nav_bin = new_nav_bin;
         pool.active_zone_lower = new_active_zone_lower;
     }
