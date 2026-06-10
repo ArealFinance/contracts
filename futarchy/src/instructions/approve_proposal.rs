@@ -24,7 +24,8 @@ pub fn handler(ctx: Context<ApproveProposal>) -> Result<()> {
         return Err(ProgramError::from(FutarchyError::GovernancePaused));
     }
 
-    let proposal = Proposal::load_mut(ctx.accounts.proposal, ctx.program_id)?;
+    // `mut` binding: status write goes through the guard's DerefMut. No CPI.
+    let mut proposal = Proposal::load_mut(ctx.accounts.proposal, ctx.program_id)?;
 
     // SECURITY (H-3): Validate proposal PDA derives from ["proposal", config, proposal_id]
     let (expected_proposal, _) = arlex_lang::find_program_address(

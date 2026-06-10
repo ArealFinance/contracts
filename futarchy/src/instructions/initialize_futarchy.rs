@@ -61,7 +61,8 @@ pub fn handler(ctx: Context<InitializeFutarchy>) -> Result<()> {
         &[b"futarchy_config", ot_mint_ref], ctx.program_id,
     );
 
-    let config = FutarchyConfig::init(ctx.accounts.config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = FutarchyConfig::init(ctx.accounts.config, ctx.program_id)?;
 
     let mut ot_mint_bytes = [0u8; 32];
     ot_mint_bytes.copy_from_slice(ot_mint_ref);

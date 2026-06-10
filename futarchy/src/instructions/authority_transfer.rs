@@ -26,7 +26,8 @@ pub fn propose_handler(
     new_authority: [u8; 32],
 ) -> Result<()> {
     // NOTE: is_active NOT checked — authority must be able to transfer to unfreeze
-    let config = FutarchyConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = FutarchyConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
 
     // SECURITY (L-2): reject zero-address as new authority
     if new_authority == [0u8; 32] {
@@ -67,7 +68,8 @@ pub struct AcceptAuthorityTransfer<'info> {
 
 pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
     // NOTE: is_active NOT checked — same design decision as propose
-    let config = FutarchyConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = FutarchyConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
 
     if !config.has_pending {
         return Err(ProgramError::from(FutarchyError::NoPendingAuthority));

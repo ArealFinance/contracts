@@ -32,7 +32,11 @@ pub fn handler(
     token_mint: [u8; 32],
     params_hash: [u8; 32],
 ) -> Result<()> {
-    let config = FutarchyConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
+    // `mut` binding: next_proposal_id write goes through the guard's DerefMut.
+    // The config account is NOT passed into the CreateAccount CPI below (from =
+    // authority, to = proposal; the proposal PDA signs), so the guard may stay
+    // live — config.ot_mint is read after the CPI for the proposal init/event.
+    let mut config = FutarchyConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
 
     if !config.is_active {
         return Err(ProgramError::from(FutarchyError::GovernancePaused));
@@ -94,8 +98,9 @@ pub fn handler(
         owner: ctx.program_id,
     }.invoke_signed(&[signer])?;
 
-    // Initialize proposal data
-    let proposal = Proposal::init(ctx.accounts.proposal, ctx.program_id)?;
+    // Initialize proposal data. `mut` binding: field writes go through the
+    // guard's DerefMut. No CPI follows (the account was created by the CPI above).
+    let mut proposal = Proposal::init(ctx.accounts.proposal, ctx.program_id)?;
 
     let mut authority_bytes = [0u8; 32];
     authority_bytes.copy_from_slice(ctx.accounts.authority.address().as_ref());
