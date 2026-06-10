@@ -39,7 +39,16 @@ pub struct DistributeRevenue<'info> {
 }
 
 pub fn handler(ctx: Context<DistributeRevenue>) -> Result<()> {
-    let revenue = RevenueAccount::load_mut(ctx.accounts.revenue_account, ctx.program_id)?;
+    // arlex v0.1.2: the RevenueAccount PDA is the signing authority of the
+    // outbound Transfer CPIs, so its mutable borrow guard must be released before
+    // them. The reentrancy flag is SET (committed to account data) here and
+    // CLEARED in a re-load_mut AFTER the CPIs (Pattern C/D): the
+    // `is_distributing = true` write persists across the CPIs in account data, so
+    // a re-entrant call still observes it and reverts. The seed material
+    // (ot_mint, bump) is copied out for the PDA-signed Transfers, and the guard
+    // is explicitly dropped after the effects. `config` is loaded read-only
+    // (non-engaging) and may stay live across the CPIs.
+    let mut revenue = RevenueAccount::load_mut(ctx.accounts.revenue_account, ctx.program_id)?;
 
     // SECURITY (M-1/M-2): validate passed ATA matches the canonical one stored at init.
     // Prevents distribute from an unexpected token account that happens to be owned by the
@@ -168,14 +177,20 @@ pub fn handler(ctx: Context<DistributeRevenue>) -> Result<()> {
         .ok_or_else(|| ProgramError::from(OtError::MathOverflow))?;
     revenue.last_distribution_ts = now;
 
-    // PDA signer seeds for RevenueAccount
+    // Copy out the seed material + the post-update distribution count, then DROP
+    // the revenue guard so the PDA-signed Transfer CPIs (authority =
+    // revenue_account) below are accepted by the checked invoke. The
+    // `is_distributing = true` write is already committed to account data.
+    let revenue_ot_mint = revenue.ot_mint;
     let bump_bytes = [revenue.bump];
+    let distribution_count_after = revenue.distribution_count;
+    drop(revenue);
 
     // --- INTERACTIONS: Transfer protocol fee ---
     if fee > 0 {
         let seeds = [
             Seed::from(b"revenue" as &[u8]),
-            Seed::from(revenue.ot_mint.as_ref()),
+            Seed::from(revenue_ot_mint.as_ref()),
             Seed::from(bump_bytes.as_ref()),
         ];
         let signer = Signer::from(&seeds);
@@ -207,7 +222,7 @@ pub fn handler(ctx: Context<DistributeRevenue>) -> Result<()> {
         if share > 0 {
             let seeds = [
                 Seed::from(b"revenue" as &[u8]),
-                Seed::from(revenue.ot_mint.as_ref()),
+                Seed::from(revenue_ot_mint.as_ref()),
                 Seed::from(bump_bytes.as_ref()),
             ];
             let signer = Signer::from(&seeds);
@@ -220,15 +235,19 @@ pub fn handler(ctx: Context<DistributeRevenue>) -> Result<()> {
         }
     }
 
-    // Clear reentrancy guard
-    revenue.is_distributing = false;
+    // Clear reentrancy guard — Pattern D: re-borrow the revenue account mut now
+    // that the CPIs have returned, then clear the flag committed before them.
+    {
+        let mut revenue = RevenueAccount::load_mut(ctx.accounts.revenue_account, ctx.program_id)?;
+        revenue.is_distributing = false;
+    }
 
     // Emit event
     emit!(RevenueDistributed {
-        ot_mint: revenue.ot_mint,
+        ot_mint: revenue_ot_mint,
         total_amount: balance,
         protocol_fee: fee,
-        distribution_count: revenue.distribution_count,
+        distribution_count: distribution_count_after,
         num_destinations: active_count as u8,
         timestamp: now,
     });

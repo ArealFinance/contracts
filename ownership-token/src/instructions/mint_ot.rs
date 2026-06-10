@@ -58,15 +58,26 @@ pub fn handler(ctx: Context<MintOt>, amount: u64) -> Result<()> {
         return Err(ProgramError::from(OtError::GovernanceInactive));
     }
 
-    // Load OtConfig (PDA already validated via seeds constraint)
-    let ot_config = OtConfig::load_mut(ctx.accounts.ot_config, ctx.program_id)?;
+    // Load OtConfig (PDA already validated via seeds constraint). Scope the
+    // mutation/reads so the guard drops before the MintTo CPI, which passes
+    // ot_config as the mint_authority signer. Copy out the bump, ot_mint and the
+    // post-update total. (Pattern A/C.)
+    let (config_bump, ot_mint_bytes, new_total_minted);
+    {
+        let mut ot_config = OtConfig::load_mut(ctx.accounts.ot_config, ctx.program_id)?;
 
-    // Update total_minted (checked_add)
-    ot_config.total_minted = ot_config.total_minted
-        .checked_add(amount)
-        .ok_or_else(|| ProgramError::from(OtError::MathOverflow))?;
+        // Update total_minted (checked_add)
+        ot_config.total_minted = ot_config.total_minted
+            .checked_add(amount)
+            .ok_or_else(|| ProgramError::from(OtError::MathOverflow))?;
 
-    // Create ATA if it doesn't exist (CreateIdempotent — no-op if exists)
+        config_bump = ot_config.bump;
+        ot_mint_bytes = ot_config.ot_mint;
+        new_total_minted = ot_config.total_minted;
+    } // OtConfig guard dropped — flag released before the MintTo CPI.
+
+    // Create ATA if it doesn't exist (CreateIdempotent — no-op if exists).
+    // ot_config is not part of this CPI (recipient is the ATA wallet).
     arlex_lang::associated_token::instructions::CreateIdempotent {
         funding_account: ctx.accounts.payer,
         account: ctx.accounts.recipient_token_account,
@@ -76,11 +87,12 @@ pub fn handler(ctx: Context<MintOt>, amount: u64) -> Result<()> {
         token_program: ctx.accounts.token_program,
     }.invoke()?;
 
-    // MintTo via OtConfig PDA signer
-    let bump = [ot_config.bump];
+    // MintTo via OtConfig PDA signer. The guard was dropped above, so passing
+    // ot_config as the mint_authority signer is accepted by the checked invoke.
+    let bump = [config_bump];
     let seeds = [
         Seed::from(b"ot_config" as &[u8]),
-        Seed::from(ot_config.ot_mint.as_ref()),
+        Seed::from(ot_mint_bytes.as_ref()),
         Seed::from(bump.as_ref()),
     ];
     let signer = Signer::from(&seeds);
@@ -95,14 +107,14 @@ pub fn handler(ctx: Context<MintOt>, amount: u64) -> Result<()> {
     // Emit event
     let clock = Clock::get()?;
     emit!(OtMinted {
-        ot_mint: ot_config.ot_mint,
+        ot_mint: ot_mint_bytes,
         recipient: {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(ctx.accounts.recipient.address().as_ref());
             arr
         },
         amount,
-        new_total_minted: ot_config.total_minted,
+        new_total_minted,
         timestamp: clock.unix_timestamp,
     });
 

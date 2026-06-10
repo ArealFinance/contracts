@@ -49,7 +49,8 @@ pub fn handler(
     }
 
     // Load RevenueConfig (PDA already validated via seeds)
-    let config = RevenueConfig::load_mut(ctx.accounts.revenue_config, ctx.program_id)?;
+    // `mut` binding: destination writes go through the guard's DerefMut. No CPI.
+    let mut config = RevenueConfig::load_mut(ctx.accounts.revenue_config, ctx.program_id)?;
 
     let zero_address = [0u8; 32];
 

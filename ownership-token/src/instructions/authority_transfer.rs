@@ -34,7 +34,8 @@ pub fn propose_handler(
 ) -> Result<()> {
     // NOTE: is_active is NOT checked — design decision to prevent permanent lockout.
 
-    let governance = OtGovernance::load_mut(ctx.accounts.ot_governance, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut governance = OtGovernance::load_mut(ctx.accounts.ot_governance, ctx.program_id)?;
 
     // SECURITY (L-1): reject zero-address as new authority
     if new_authority == [0u8; 32] {
@@ -86,7 +87,8 @@ pub struct AcceptAuthorityTransfer<'info> {
 pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
     // NOTE: is_active is NOT checked — same design decision as propose.
 
-    let governance = OtGovernance::load_mut(ctx.accounts.ot_governance, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut governance = OtGovernance::load_mut(ctx.accounts.ot_governance, ctx.program_id)?;
 
     if !governance.has_pending {
         return Err(ProgramError::from(OtError::NoPendingAuthority));
