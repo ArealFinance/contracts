@@ -4,13 +4,17 @@
 //! the DAO fee destination. The `basket_vault`, `rwt_mint`, `usdc_mint`, and
 //! `pause_authority` are IMMUTABLE — set once at `initialize`.
 //!
-//! `mint_fee_bps` is capped at BPS_DENOMINATOR (100%); `dao_fee_destination`
-//! cannot be the zero address.
+//! `mint_fee_bps` is capped at `MAX_MINT_FEE_BPS` (10%); `min_mint_amount` is
+//! bounded to `[MIN_MINT_AMOUNT, MAX_MIN_MINT_AMOUNT]` so the authority can
+//! neither lower it below the anti-dust floor nor raise it high enough to
+//! soft-brick minting; `dao_fee_destination` cannot be the zero address.
 
 use arlex_lang::prelude::*;
-use pinocchio::sysvars::{Sysvar, clock::Clock};
+use pinocchio::sysvars::{clock::Clock, Sysvar};
 
-use crate::constants::{BPS_DENOMINATOR, EARN_CONFIG_SEED};
+use crate::constants::{
+    EARN_CONFIG_SEED, MAX_MINT_FEE_BPS, MAX_MIN_MINT_AMOUNT, MIN_MINT_AMOUNT,
+};
 use crate::error::EarnError;
 use crate::events::EarnConfigUpdated;
 use crate::state::EarnConfig;
@@ -27,6 +31,29 @@ pub struct UpdateConfig<'info> {
     pub earn_config: &'info AccountView,
 }
 
+fn validate_update_config_inputs(
+    mint_fee_bps: u16,
+    min_mint_amount: u64,
+    dao_fee_destination: [u8; 32],
+) -> Result<()> {
+    // L2: cap the mint fee at 10% (was 100% via BPS_DENOMINATOR).
+    if mint_fee_bps > MAX_MINT_FEE_BPS {
+        return Err(ProgramError::from(EarnError::FeeTooHigh));
+    }
+    if dao_fee_destination == [0u8; 32] {
+        return Err(ProgramError::from(EarnError::InvalidFeeDestination));
+    }
+    if min_mint_amount < MIN_MINT_AMOUNT {
+        return Err(ProgramError::from(EarnError::BelowMinMint));
+    }
+    // L3: bound the anti-dust floor so it cannot be raised out of reach.
+    if min_mint_amount > MAX_MIN_MINT_AMOUNT {
+        return Err(ProgramError::from(EarnError::MinMintTooHigh));
+    }
+
+    Ok(())
+}
+
 pub fn handler(
     ctx: Context<UpdateConfig>,
     mint_fee_bps: u16,
@@ -36,12 +63,7 @@ pub fn handler(
     let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---
-    if mint_fee_bps as u64 > BPS_DENOMINATOR {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
-    if dao_fee_destination == [0u8; 32] {
-        return Err(ProgramError::from(EarnError::InvalidFeeDestination));
-    }
+    validate_update_config_inputs(mint_fee_bps, min_mint_amount, dao_fee_destination)?;
 
     // --- Effects ---
     config.mint_fee_bps = mint_fee_bps;
@@ -58,4 +80,81 @@ pub fn handler(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::constants::DEFAULT_MINT_FEE_BPS;
+
+    fn custom_code(err: ProgramError) -> u32 {
+        match err {
+            ProgramError::Custom(code) => code,
+            other => panic!("expected ProgramError::Custom, got {:?}", other),
+        }
+    }
+
+    fn assert_err_code(result: Result<()>, expected: EarnError) {
+        assert_eq!(
+            custom_code(result.unwrap_err()),
+            custom_code(ProgramError::from(expected)),
+        );
+    }
+
+    #[test]
+    fn update_config_rejects_min_mint_amount_below_floor() {
+        assert_err_code(
+            validate_update_config_inputs(DEFAULT_MINT_FEE_BPS, MIN_MINT_AMOUNT - 1, [1u8; 32]),
+            EarnError::BelowMinMint,
+        );
+    }
+
+    #[test]
+    fn update_config_accepts_min_mint_amount_at_floor() {
+        assert!(
+            validate_update_config_inputs(DEFAULT_MINT_FEE_BPS, MIN_MINT_AMOUNT, [1u8; 32],)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn update_config_keeps_existing_fee_and_destination_guards() {
+        // L2: above the 10% ceiling is rejected with FeeTooHigh.
+        assert_err_code(
+            validate_update_config_inputs(MAX_MINT_FEE_BPS + 1, MIN_MINT_AMOUNT, [1u8; 32]),
+            EarnError::FeeTooHigh,
+        );
+        assert_err_code(
+            validate_update_config_inputs(DEFAULT_MINT_FEE_BPS, MIN_MINT_AMOUNT, [0u8; 32]),
+            EarnError::InvalidFeeDestination,
+        );
+    }
+
+    #[test]
+    fn update_config_accepts_fee_at_ceiling() {
+        assert!(
+            validate_update_config_inputs(MAX_MINT_FEE_BPS, MIN_MINT_AMOUNT, [1u8; 32]).is_ok()
+        );
+    }
+
+    #[test]
+    fn update_config_rejects_min_mint_amount_above_ceiling() {
+        // L3: a floor raised out of reach is rejected with MinMintTooHigh.
+        assert_err_code(
+            validate_update_config_inputs(
+                DEFAULT_MINT_FEE_BPS,
+                MAX_MIN_MINT_AMOUNT + 1,
+                [1u8; 32],
+            ),
+            EarnError::MinMintTooHigh,
+        );
+    }
+
+    #[test]
+    fn update_config_accepts_min_mint_amount_at_ceiling() {
+        assert!(
+            validate_update_config_inputs(DEFAULT_MINT_FEE_BPS, MAX_MIN_MINT_AMOUNT, [1u8; 32])
+                .is_ok()
+        );
+    }
 }

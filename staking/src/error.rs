@@ -52,4 +52,6 @@ pub enum StakingError {
     InvalidTokenAccount,
     #[msg("Address cannot be zero")]
     ZeroAddress,
+    #[msg("Signer is not the bootstrap authority")]
+    UnauthorizedBootstrap,
 }

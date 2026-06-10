@@ -7,16 +7,24 @@ pub enum EarnError {
     Unauthorized,
     #[msg("Signer is not the pause authority")]
     UnauthorizedPause,
+    #[msg("Signer is not the bootstrap authority")]
+    UnauthorizedBootstrap,
 
     // ----- Lifecycle / state -----
     #[msg("Earn program is paused")]
     EarnPaused,
+    #[msg("RWT supply must be non-zero")]
+    NoRwtSupply,
 
     // ----- Inputs -----
     #[msg("Amount must be > 0")]
     ZeroAmount,
     #[msg("Deposit below minimum")]
     BelowMinMint,
+    #[msg("mint_fee_bps exceeds the maximum")]
+    FeeTooHigh,
+    #[msg("min_mint_amount exceeds the maximum")]
+    MinMintTooHigh,
     #[msg("min_rwt_out must be > 0")]
     ZeroSlippage,
     #[msg("Output below min_rwt_out (slippage protection)")]
@@ -35,6 +43,16 @@ pub enum EarnError {
     InvalidTokenAccount,
     #[msg("RWT mint does not match config.rwt_mint")]
     InvalidRwtMint,
+    #[msg("RWT mint authority must be the EarnConfig PDA")]
+    InvalidMintAuthority,
+    #[msg("RWT mint supply must be zero at initialize")]
+    InvalidMintSupply,
+    #[msg("RWT mint decimals mismatch")]
+    InvalidMintDecimals,
+    #[msg("RWT mint freeze authority must be unset")]
+    InvalidFreezeAuthority,
+    #[msg("Token account owner mismatch")]
+    InvalidTokenOwner,
     #[msg("Destination address cannot be zero")]
     ZeroDestination,
     #[msg("Pause authority cannot be zero address")]

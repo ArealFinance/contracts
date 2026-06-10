@@ -7,9 +7,13 @@
 //!
 //! Source is any USDC ATA owned by the authority signer; the contract
 //! constrains only the destination (`basket_vault`).
+//!
+//! Guard: RWT supply must already be non-zero. Otherwise authority could preload
+//! capital while Book NAV still uses the INITIAL_NAV zero-supply guard, allowing
+//! the first minter to capture pre-funded value at $1.
 
 use arlex_lang::prelude::*;
-use pinocchio::sysvars::{Sysvar, clock::Clock};
+use pinocchio::sysvars::{clock::Clock, Sysvar};
 
 use crate::constants::{EARN_CONFIG_SEED, SPL_TOKEN_PROGRAM};
 use crate::error::EarnError;
@@ -47,6 +51,14 @@ pub struct AddToBasket<'info> {
     pub token_program: &'info AccountView,
 }
 
+fn require_nonzero_rwt_supply(supply: u64) -> Result<()> {
+    if supply == 0 {
+        return Err(ProgramError::from(EarnError::NoRwtSupply));
+    }
+
+    Ok(())
+}
+
 pub fn handler(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
     let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
@@ -67,10 +79,12 @@ pub fn handler(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
 
     // --- NAV before snapshot ---
     let supply = read_mint_supply(ctx.accounts.rwt_mint)?;
+    require_nonzero_rwt_supply(supply)?;
     let nav_before = calculate_nav(config.total_invested_capital, supply)?;
 
     // --- Effects: bump capital BEFORE the CPI ---
-    config.total_invested_capital = config.total_invested_capital
+    config.total_invested_capital = config
+        .total_invested_capital
         .checked_add(amount as u128)
         .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
 
@@ -82,7 +96,8 @@ pub fn handler(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
         to: ctx.accounts.basket_vault,
         authority: ctx.accounts.authority,
         amount,
-    }.invoke()?;
+    }
+    .invoke()?;
 
     // --- Emit event ---
     let clock = Clock::get()?;
@@ -94,4 +109,30 @@ pub fn handler(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom_code(err: ProgramError) -> u32 {
+        match err {
+            ProgramError::Custom(code) => code,
+            other => panic!("expected ProgramError::Custom, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn add_to_basket_rejects_zero_rwt_supply() {
+        let err = require_nonzero_rwt_supply(0).unwrap_err();
+        assert_eq!(
+            custom_code(err),
+            custom_code(ProgramError::from(EarnError::NoRwtSupply)),
+        );
+    }
+
+    #[test]
+    fn add_to_basket_allows_existing_rwt_supply() {
+        assert!(require_nonzero_rwt_supply(1).is_ok());
+    }
 }

@@ -52,6 +52,22 @@ pub fn handler(ctx: Context<CompleteUnstake>, nonce: u64) -> Result<()> {
         return Err(ProgramError::from(StakingError::InvalidTokenAccount));
     }
 
+    // L1: re-derive the canonical ticket PDA from seeds and require it to equal
+    // the passed account. Seeds mirror `initiate_unstake` exactly:
+    //   ["unstake", user, nonce.to_le_bytes()].
+    // This single canonical-address check is authoritative — it subsumes the
+    // owner/nonce/discriminator checks below as a defense against a substituted
+    // ticket account.
+    let nonce_le = nonce.to_le_bytes();
+    let user_seed = ctx.accounts.user.address();
+    let (expected_ticket, _ticket_bump) = arlex_lang::find_program_address(
+        &[UNSTAKE_SEED, user_seed.as_ref(), &nonce_le],
+        ctx.program_id,
+    );
+    if ctx.accounts.ticket.address().as_ref() != expected_ticket.as_ref() {
+        return Err(ProgramError::from(StakingError::TicketOwnerMismatch));
+    }
+
     // --- Load + validate the ticket ---
     let (amount_rwt, reserved_after) = {
         let ticket = UnstakeTicket::load(ctx.accounts.ticket, ctx.program_id)?;
