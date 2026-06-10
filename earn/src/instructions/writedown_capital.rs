@@ -39,7 +39,8 @@ pub fn handler(
     amount: u64,
     reason_code: u8,
 ) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding: capital write goes through the guard's DerefMut. No CPI.
+    let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---
     if amount == 0 {

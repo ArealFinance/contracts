@@ -203,7 +203,9 @@ pub fn handler(
     )?;
 
     // --- Initialize EarnConfig ---
-    let config = EarnConfig::init(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI
+    // follows this init (the account was created by the CPI above, before init).
+    let mut config = EarnConfig::init(ctx.accounts.earn_config, ctx.program_id)?;
     config.total_invested_capital = 0;
     config.authority = authority;
     config.pending_authority = [0u8; 32];

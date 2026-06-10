@@ -60,7 +60,11 @@ fn require_nonzero_rwt_supply(supply: u64) -> Result<()> {
 }
 
 pub fn handler(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding required: capital write goes through the guard's DerefMut.
+    // The earn_config PDA is NOT passed into the Transfer CPI below (the
+    // authority signs, source/dest are token accounts), so the guard may stay
+    // live across the transfer.
+    let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---
     if amount == 0 {

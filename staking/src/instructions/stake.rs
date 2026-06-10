@@ -49,57 +49,65 @@ pub struct Stake<'info> {
 }
 
 pub fn handler(ctx: Context<Stake>, rwt_amount: u64, min_strwt_out: u64) -> Result<()> {
-    let config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
+    // CHECKS + EFFECTS in a scope that drops the StakingConfig borrow guard
+    // before the MintTo CPI below. The staking_config PDA is passed into MintTo
+    // as the mint_authority signer, which the checked invoke rejects while the
+    // account is still mutably borrowed. Copy out the bump and computed amounts;
+    // the guard's Drop releases the borrow flag at the end of this block.
+    let (config_bump, active_after, strwt_supply_after, rate_after, strwt_out);
+    {
+        let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
-    // --- Checks ---
-    if config.is_paused {
-        return Err(ProgramError::from(StakingError::StakingPaused));
-    }
-    if rwt_amount < config.min_stake_amount {
-        return Err(ProgramError::from(StakingError::BelowMinStake));
-    }
+        // --- Checks ---
+        if config.is_paused {
+            return Err(ProgramError::from(StakingError::StakingPaused));
+        }
+        if rwt_amount < config.min_stake_amount {
+            return Err(ProgramError::from(StakingError::BelowMinStake));
+        }
 
-    // Validate accounts against config.
-    if ctx.accounts.strwt_mint.address().as_ref() != config.strwt_mint.as_ref() {
-        return Err(ProgramError::from(StakingError::InvalidTokenAccount));
-    }
-    if ctx.accounts.pool_vault.address().as_ref() != config.pool_vault.as_ref() {
-        return Err(ProgramError::from(StakingError::InvalidTokenAccount));
-    }
-    // user_rwt_ata must hold RWT, user_strwt_ata must hold stRWT.
-    if read_token_account_mint(ctx.accounts.user_rwt_ata)? != config.rwt_mint {
-        return Err(ProgramError::from(StakingError::InvalidTokenAccount));
-    }
-    if read_token_account_mint(ctx.accounts.user_strwt_ata)? != config.strwt_mint {
-        return Err(ProgramError::from(StakingError::InvalidTokenAccount));
-    }
+        // Validate accounts against config.
+        if ctx.accounts.strwt_mint.address().as_ref() != config.strwt_mint.as_ref() {
+            return Err(ProgramError::from(StakingError::InvalidTokenAccount));
+        }
+        if ctx.accounts.pool_vault.address().as_ref() != config.pool_vault.as_ref() {
+            return Err(ProgramError::from(StakingError::InvalidTokenAccount));
+        }
+        // user_rwt_ata must hold RWT, user_strwt_ata must hold stRWT.
+        if read_token_account_mint(ctx.accounts.user_rwt_ata)? != config.rwt_mint {
+            return Err(ProgramError::from(StakingError::InvalidTokenAccount));
+        }
+        if read_token_account_mint(ctx.accounts.user_strwt_ata)? != config.strwt_mint {
+            return Err(ProgramError::from(StakingError::InvalidTokenAccount));
+        }
 
-    // --- Rate math (read live stRWT supply from the mint) ---
-    let strwt_supply = read_mint_supply(ctx.accounts.strwt_mint)?;
-    let active = config.total_rwt_active;
+        // --- Rate math (read live stRWT supply from the mint) ---
+        let strwt_supply = read_mint_supply(ctx.accounts.strwt_mint)?;
+        let active = config.total_rwt_active;
 
-    let strwt_out = strwt_out_for_stake(rwt_amount, strwt_supply, active)
-        .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
+        strwt_out = strwt_out_for_stake(rwt_amount, strwt_supply, active)
+            .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
 
-    if strwt_out == 0 {
-        return Err(ProgramError::from(StakingError::ZeroStrwtOutput));
-    }
-    if strwt_out < min_strwt_out {
-        return Err(ProgramError::from(StakingError::SlippageExceeded));
-    }
+        if strwt_out == 0 {
+            return Err(ProgramError::from(StakingError::ZeroStrwtOutput));
+        }
+        if strwt_out < min_strwt_out {
+            return Err(ProgramError::from(StakingError::SlippageExceeded));
+        }
 
-    // --- Effects: bump active counter BEFORE any CPI ---
-    let active_after = active
-        .checked_add(rwt_amount)
-        .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
-    config.total_rwt_active = active_after;
+        // --- Effects: bump active counter BEFORE any CPI ---
+        active_after = active
+            .checked_add(rwt_amount)
+            .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
+        config.total_rwt_active = active_after;
 
-    let config_bump = config.bump;
-    let strwt_supply_after = strwt_supply
-        .checked_add(strwt_out)
-        .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
-    let rate_after = rate_snapshot(active_after, strwt_supply_after)
-        .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
+        config_bump = config.bump;
+        strwt_supply_after = strwt_supply
+            .checked_add(strwt_out)
+            .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
+        rate_after = rate_snapshot(active_after, strwt_supply_after)
+            .ok_or_else(|| ProgramError::from(StakingError::MathOverflow))?;
+    } // StakingConfig guard dropped here — borrow flag released before the CPIs.
 
     // --- Interactions ---
     // 1. User transfers RWT → pool_vault (user is signer/authority).
@@ -112,6 +120,9 @@ pub fn handler(ctx: Context<Stake>, rwt_amount: u64, min_strwt_out: u64) -> Resu
     .invoke()?;
 
     // 2. Config PDA mints stRWT to the user.
+    // The StakingConfig borrow guard was dropped at the end of the CHECKS+EFFECTS
+    // block above, so passing staking_config as the mint_authority signer here is
+    // accepted by the checked invoke (no live AccountRefMut on this account).
     let bump_arr = [config_bump];
     let seeds = [
         Seed::from(STAKING_CONFIG_SEED),

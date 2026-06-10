@@ -32,7 +32,8 @@ pub fn propose_handler(
     ctx: Context<ProposeAuthorityTransfer>,
     new_authority: [u8; 32],
 ) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     if new_authority == [0u8; 32] {
         return Err(ProgramError::from(EarnError::ZeroDestination));
@@ -69,7 +70,8 @@ pub struct AcceptAuthorityTransfer<'info> {
 }
 
 pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
-    let config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     if !config.has_pending {
         return Err(ProgramError::from(EarnError::NoPendingAuthority));

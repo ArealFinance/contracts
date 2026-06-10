@@ -184,7 +184,9 @@ pub fn handler(
     )?;
 
     // --- Initialize StakingConfig ---
-    let config = StakingConfig::init(ctx.accounts.staking_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI
+    // follows this init (the account was created by the CPI above, before init).
+    let mut config = StakingConfig::init(ctx.accounts.staking_config, ctx.program_id)?;
     config
         .authority
         .copy_from_slice(ctx.accounts.authority.address().as_ref());

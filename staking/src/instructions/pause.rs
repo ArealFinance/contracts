@@ -33,7 +33,8 @@ fn set_paused(
     program_id: &Address,
     paused: bool,
 ) -> Result<()> {
-    let config = StakingConfig::load_mut(config_account, program_id)?;
+    // `mut` binding: is_paused write goes through the guard's DerefMut. No CPI.
+    let mut config = StakingConfig::load_mut(config_account, program_id)?;
     if signer.address().as_ref() != config.pause_authority.as_ref() {
         return Err(ProgramError::from(StakingError::UnauthorizedPause));
     }

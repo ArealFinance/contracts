@@ -42,7 +42,8 @@ pub fn handler(
     min_stake_amount: u64,
     cooldown_seconds: i64,
 ) -> Result<()> {
-    let config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
     // Authority gate.
     if ctx.accounts.authority.address().as_ref() != config.authority.as_ref() {

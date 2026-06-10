@@ -48,7 +48,11 @@ pub struct InitiateUnstake<'info> {
 }
 
 pub fn handler(ctx: Context<InitiateUnstake>, strwt_amount: u64, nonce: u64) -> Result<()> {
-    let config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
+    // `mut` binding: counter writes go through the guard's DerefMut. The
+    // staking_config PDA is NOT passed into either CPI below (the Burn is signed
+    // by `user`; the CreateAccount is signed by the ticket PDA), so the guard may
+    // stay live across both CPIs — config.cooldown_seconds is read between them.
+    let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
     // --- Checks ---
     if config.is_paused {
@@ -128,7 +132,9 @@ pub fn handler(ctx: Context<InitiateUnstake>, strwt_amount: u64, nonce: u64) -> 
     let mut owner_arr = [0u8; 32];
     owner_arr.copy_from_slice(user_seed.as_ref());
 
-    let ticket = UnstakeTicket::init(ctx.accounts.ticket, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI
+    // follows this init (the ticket account was created by the CPI above).
+    let mut ticket = UnstakeTicket::init(ctx.accounts.ticket, ctx.program_id)?;
     ticket.owner = owner_arr;
     ticket.amount_rwt = rwt_out;
     ticket.unlock_ts = unlock_ts;
