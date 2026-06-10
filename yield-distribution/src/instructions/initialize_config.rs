@@ -62,7 +62,8 @@ pub fn handler(
     let (_, config_bump) = arlex_lang::find_program_address(&[b"dist_config"], ctx.program_id);
 
     // --- Initialize config ---
-    let config = DistributionConfig::init(ctx.accounts.config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = DistributionConfig::init(ctx.accounts.config, ctx.program_id)?;
     config
         .authority
         .copy_from_slice(ctx.accounts.deployer.address().as_ref());

@@ -50,30 +50,37 @@ pub struct CloseDistributor<'info> {
 }
 
 pub fn handler(ctx: Context<CloseDistributor>) -> Result<()> {
-    let dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
-    if !dist.is_active {
-        return Err(ProgramError::from(YdError::DistributorNotActive));
-    }
-    if dist.ot_mint != ctx.accounts.ot_mint.address().as_ref() {
-        return Err(ProgramError::from(YdError::InvalidOtMint));
-    }
-    if ctx.accounts.reward_vault.address().as_ref() != dist.reward_vault.as_ref() {
-        return Err(ProgramError::from(YdError::InvalidRewardVault));
-    }
+    // CHECKS + EFFECTS in a scope that drops the MerkleDistributor guard before
+    // the Transfer CPI below (the distributor PDA is the Transfer authority).
+    // Copy out the seed material and the swept amount; the guard's Drop releases
+    // the borrow flag at the end of this block. (Pattern C/D.)
+    let (remaining, ot_mint_bytes, dist_bump);
+    {
+        let mut dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
+        if !dist.is_active {
+            return Err(ProgramError::from(YdError::DistributorNotActive));
+        }
+        if dist.ot_mint != ctx.accounts.ot_mint.address().as_ref() {
+            return Err(ProgramError::from(YdError::InvalidOtMint));
+        }
+        if ctx.accounts.reward_vault.address().as_ref() != dist.reward_vault.as_ref() {
+            return Err(ProgramError::from(YdError::InvalidRewardVault));
+        }
 
-    // Both token accounts must hold RWT.
-    let vault_mint = read_token_account_mint(ctx.accounts.reward_vault)?;
-    let dest_mint = read_token_account_mint(ctx.accounts.unclaimed_destination)?;
-    if vault_mint != RWT_MINT || dest_mint != RWT_MINT {
-        return Err(ProgramError::from(YdError::InvalidTokenAccount));
-    }
+        // Both token accounts must hold RWT.
+        let vault_mint = read_token_account_mint(ctx.accounts.reward_vault)?;
+        let dest_mint = read_token_account_mint(ctx.accounts.unclaimed_destination)?;
+        if vault_mint != RWT_MINT || dest_mint != RWT_MINT {
+            return Err(ProgramError::from(YdError::InvalidTokenAccount));
+        }
 
-    let remaining = read_token_account_amount(ctx.accounts.reward_vault)?;
-    let ot_mint_bytes = dist.ot_mint;
-    let dist_bump = dist.bump;
+        remaining = read_token_account_amount(ctx.accounts.reward_vault)?;
+        ot_mint_bytes = dist.ot_mint;
+        dist_bump = dist.bump;
 
-    // Mark inactive BEFORE CPI (CEI).
-    dist.is_active = false;
+        // Mark inactive BEFORE CPI (CEI).
+        dist.is_active = false;
+    } // MerkleDistributor guard dropped — flag released before the Transfer CPI.
 
     if remaining > 0 {
         let bump_arr = [dist_bump];

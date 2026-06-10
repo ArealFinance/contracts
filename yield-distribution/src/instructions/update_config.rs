@@ -27,7 +27,8 @@ pub fn handler(
     min_distribution_amount: u64,
     is_active: bool,
 ) -> Result<()> {
-    let config = DistributionConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut config = DistributionConfig::load_mut(ctx.accounts.config, ctx.program_id)?;
 
     config.protocol_fee_bps = protocol_fee_bps;
     config.min_distribution_amount = min_distribution_amount;

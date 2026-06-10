@@ -45,7 +45,8 @@ pub fn handler(
         return Err(ProgramError::from(YdError::UnauthorizedPublisher));
     }
 
-    let dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
+    // `mut` binding: root/epoch writes go through the guard's DerefMut. No CPI.
+    let mut dist = MerkleDistributor::load_mut(ctx.accounts.distributor, ctx.program_id)?;
     if !dist.is_active {
         return Err(ProgramError::from(YdError::DistributorNotActive));
     }
