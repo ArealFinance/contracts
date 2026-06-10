@@ -186,6 +186,18 @@ pub fn handler(
         return Err(ProgramError::from(EarnError::InvalidFeeDestination));
     }
 
+    // SECURITY (L1): the fee destination MUST differ from the basket vault.
+    // In `mint_rwt` the deposit body lands in `basket_vault` and is counted into
+    // `total_invested_capital`, while the 1% fee lands in `dao_fee_destination`
+    // and is EXCLUDED from capital. If both point at the same token account, the
+    // fee physically accrues in the basket but is never accounted — the vault
+    // balance drifts above tracked capital, desyncing the NAV bookkeeping.
+    if ctx.accounts.dao_fee_destination.address().as_ref()
+        == ctx.accounts.basket_vault.address().as_ref()
+    {
+        return Err(ProgramError::from(EarnError::FeeDestinationIsBasketVault));
+    }
+
     // --- Create the config PDA after all bootstrap gates pass ---
     let config_bump_arr = [config_bump];
     let config_seeds = [

@@ -67,4 +67,9 @@ pub enum EarnError {
     InvalidPendingAuthority,
     #[msg("Cannot transfer authority to yourself")]
     SelfTransfer,
+
+    // ----- Accounting integrity -----
+    // NOTE: appended at the END to preserve existing error-code stability.
+    #[msg("Fee destination cannot be the basket vault")]
+    FeeDestinationIsBasketVault,
 }
