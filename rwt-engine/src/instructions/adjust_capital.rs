@@ -20,7 +20,8 @@ pub struct AdjustCapital<'info> {
 }
 
 pub fn handler(ctx: Context<AdjustCapital>, writedown_amount: u64) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // `mut` binding: capital/NAV writes go through the guard's DerefMut. No CPI.
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     // --- Checks ---
     if writedown_amount == 0 {

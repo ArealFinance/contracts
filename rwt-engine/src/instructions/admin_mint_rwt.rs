@@ -61,7 +61,12 @@ pub fn handler(
     rwt_amount: u64,
     backing_capital_usd: u64,
 ) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // CHECKS + EFFECTS in a scope that drops the RwtVault borrow guard before
+    // the MintTo CPI below (rwt_vault is the mint_authority signer). Copy out the
+    // bump and post-update NAV; the guard's Drop releases the borrow flag here.
+    let (nav_after, vault_bump);
+    {
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     // --- Checks ---
     // NOTE: admin_mint_rwt is NOT blocked by mint_paused (design decision per spec)
@@ -92,10 +97,12 @@ pub fn handler(
         .ok_or_else(|| ProgramError::from(RwtError::MathOverflow))?;
     vault.nav_book_value = calculate_nav(vault.total_invested_capital, vault.total_rwt_supply)?;
 
-    let nav_after = vault.nav_book_value;
+    nav_after = vault.nav_book_value;
+    vault_bump = vault.bump;
+    } // RwtVault guard dropped here — borrow flag released before the MintTo CPI.
 
     // --- Interactions: Vault PDA mints RWT to recipient ---
-    let bump = [vault.bump];
+    let bump = [vault_bump];
     let seeds = [
         Seed::from(b"rwt_vault" as &[u8]),
         Seed::from(bump.as_ref()),

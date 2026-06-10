@@ -26,7 +26,8 @@ pub struct UnpauseMint<'info> {
 }
 
 pub fn pause_handler(ctx: Context<PauseMint>) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // `mut` binding: mint_paused write goes through the guard's DerefMut. No CPI.
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     // Manual check: signer must be pause_authority (not authority — different role)
     if ctx.accounts.pause_authority.address().as_ref() != vault.pause_authority.as_ref() {
@@ -46,7 +47,8 @@ pub fn pause_handler(ctx: Context<PauseMint>) -> Result<()> {
 }
 
 pub fn unpause_handler(ctx: Context<UnpauseMint>) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // `mut` binding: mint_paused write goes through the guard's DerefMut. No CPI.
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     // Manual check: signer must be pause_authority
     if ctx.accounts.pause_authority.address().as_ref() != vault.pause_authority.as_ref() {

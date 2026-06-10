@@ -23,7 +23,8 @@ pub fn propose_handler(
     ctx: Context<ProposeAuthorityTransfer>,
     new_authority: [u8; 32],
 ) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     if new_authority == [0u8; 32] {
         return Err(ProgramError::from(RwtError::ZeroDestination));
@@ -61,7 +62,8 @@ pub struct AcceptAuthorityTransfer<'info> {
 }
 
 pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
-    let vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
+    // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    let mut vault = RwtVault::load_mut(ctx.accounts.rwt_vault, ctx.program_id)?;
 
     if !vault.has_pending {
         return Err(ProgramError::from(RwtError::NoPendingAuthority));
