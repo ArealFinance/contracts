@@ -22,6 +22,14 @@ arlex-lang = { git = "https://github.com/ArealFinance/arlex", tag = "v0.1.1" }
 sha2 = "0.10"
 bs58 = "0.5"
 
+# TEMPORARY local-build patch: redirect the arlex git source to the local
+# v0.1.2 framework checkout so the borrow-guard migration can be compiled and
+# verified before the v0.1.2 tag is pushed. This [patch] is removed in the
+# final commit, which pins the real dependency to tag = "v0.1.2".
+[patch."https://github.com/ArealFinance/arlex"]
+arlex-lang = { path = "/Users/blackmesa/Documents/arlex-framework/arlex-lang" }
+arlex-derive = { path = "/Users/blackmesa/Documents/arlex-framework/arlex-derive" }
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
