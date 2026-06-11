@@ -199,6 +199,9 @@ pub fn handler(ctx: Context<Initialize>, reward_depositor: [u8; 32]) -> Result<(
     config.cooldown_seconds = COOLDOWN_SECONDS;
     config.min_stake_amount = MIN_STAKE_AMOUNT;
     config.bump = config_bump;
+    config.schema_version = 1;
+    // `_reserved` is zero by construction (the System Program zeroes the new
+    // account body; `init` writes only the discriminator), so no memset here.
 
     // --- Emit event ---
     let clock = Clock::get()?;

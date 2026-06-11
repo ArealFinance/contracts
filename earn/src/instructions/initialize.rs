@@ -218,6 +218,9 @@ pub fn handler(ctx: Context<Initialize>, authority: [u8; 32]) -> Result<()> {
     config.usdc_mint = usdc_mint;
     config.min_mint_amount = MIN_MINT_AMOUNT;
     config.bump = config_bump;
+    config.schema_version = 1;
+    // `_reserved` is zero by construction (the System Program zeroes the new
+    // account body; `init` writes only the discriminator), so no memset here.
 
     // --- Emit event ---
     let clock = Clock::get()?;

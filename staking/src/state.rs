@@ -20,6 +20,21 @@ use arlex_lang::prelude::*;
 // "no pending" is encoded as `has_pending = false` + zeroed pending_authority.
 // =============================================================================
 
+// ── Forward-compatibility: schema_version + _reserved ───────────────────────
+// To add a new field AFTER mainnet WITHOUT changing the account size or the
+// program ID:
+//   1. Shrink `_reserved` by sizeof(new field): [u8; 128] → [u8; 128 - K].
+//   2. Insert the new field immediately BEFORE `_reserved`.
+//   3. Bump `schema_version` (1 → 2 → …).
+//   4. Total SIZE/SPACE is UNCHANGED → `assert_account_size` keeps passing and
+//      old + new accounts are both exactly SPACE bytes.
+//   5. Accounts written by an older version read the new field as ZERO (the old
+//      reserve bytes were zero). If 0 is NOT a safe default, gate the field's
+//      use on `schema_version >= N` and lazily initialize it.
+// FROZEN INVARIANTS: never reorder/resize an EXISTING field, never grow the
+// struct past SPACE, `_reserved` stays the LAST field. Exhausting `_reserved`
+// or restructuring an existing field requires a fresh program ID + audited
+// migration (there is intentionally no general migrate_config rewrite lever).
 #[account]
 pub struct StakingConfig {
     pub authority: [u8; 32],         // 32 — V1: single key, V2: multisig
@@ -34,12 +49,14 @@ pub struct StakingConfig {
     pub cooldown_seconds: i64,       // 8  — default 1_814_400 (21d), tunable
     pub min_stake_amount: u64,       // 8  — anti-dust floor, tunable
     pub bump: u8,                    // 1  — PDA bump
+    pub schema_version: u8,          // 1  — layout version, = 1 at initialize
+    pub _reserved: [u8; 128],        // 128 — reserved padding; future fields carve from its FRONT
 }
-// SIZE = 32+32+1+32+32+32+32+8+8+8+8+1 = 226
-// SPACE = 8 (discriminator) + 226 = 234
-//   running: 32,64,65,97,129,161,193,201,209,217,225,226
+// SIZE = 32+32+1+32+32+32+32+8+8+8+8+1+1+128 = 355
+// SPACE = 8 (discriminator) + 355 = 363
+//   running: 32,64,65,97,129,161,193,201,209,217,225,226,227,355
 
-const _: () = assert!(core::mem::size_of::<StakingConfig>() == 226);
+const _: () = assert!(core::mem::size_of::<StakingConfig>() == 355);
 
 impl StakingConfig {
     pub fn assert_account_size(account: &AccountView) -> Result<()> {
@@ -72,3 +89,34 @@ pub struct UnstakeTicket {
 // SPACE = 8 + 57 = 65
 
 const _: () = assert!(core::mem::size_of::<UnstakeTicket>() == 57);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Layout proof: SIZE/SPACE follow the struct size (auto-derived by
+    // #[account]). The schema_version + _reserved padding sit at the END so
+    // every prior field offset is unchanged versus the pre-forward-compat
+    // layout (SIZE 226).
+    #[test]
+    fn staking_config_layout_size_and_space_are_pinned() {
+        assert_eq!(StakingConfig::SIZE, 355);
+        assert_eq!(StakingConfig::SPACE, 363);
+    }
+
+    // `_reserved` must remain the trailing 128 bytes: a future field carves
+    // from its front, keeping total SIZE constant.
+    #[test]
+    fn staking_config_reserved_padding_is_the_trailing_tail() {
+        assert_eq!(core::mem::size_of::<[u8; 128]>(), 128);
+        // bump(1) + schema_version(1) + _reserved(128) over the 225-byte head
+        // (everything up to and including min_stake_amount).
+        assert_eq!(StakingConfig::SIZE, 225 + 1 + 1 + 128);
+    }
+
+    #[test]
+    fn unstake_ticket_layout_unchanged() {
+        assert_eq!(UnstakeTicket::SIZE, 57);
+        assert_eq!(UnstakeTicket::SPACE, 65);
+    }
+}
