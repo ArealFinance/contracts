@@ -28,7 +28,7 @@ pub struct EarnConfig {
     pub authority: [u8; 32],             // 32 — V1: single key, V2: multisig
     pub pending_authority: [u8; 32],     // 32 (zeroed = no pending transfer)
     pub has_pending: bool,               // 1
-    pub pause_authority: [u8; 32],       // 32 (immutable — change only via program upgrade)
+    pub pause_authorities: [[u8; 32]; 3], // 96 — immutable guardians (change only via program upgrade); any can pause, only `authority` unpauses; a zeroed slot = unused
     pub is_paused: bool,                 // 1
     pub mint_fee_bps: u16,               // 2 — default 100 (1%); tunable via update_config
     pub basket_vault: [u8; 32],          // 32 — USDC vault, EarnConfig-PDA-owned (immutable)
@@ -38,8 +38,8 @@ pub struct EarnConfig {
     pub min_mint_amount: u64,            // 8 — anti-dust floor
     pub bump: u8,                        // 1 — PDA bump
 }
-// SIZE = 16 + 32 + 32 + 1 + 32 + 1 + 2 + 32 + 32 + 32 + 32 + 8 + 1 = 253
-// SPACE = 8 + 253 = 261
-//   running: 16,48,80,81,113,114,116,148,180,212,244,252,253
+// SIZE = 16 + 32 + 32 + 1 + 96 + 1 + 2 + 32 + 32 + 32 + 32 + 8 + 1 = 317
+// SPACE = 8 + 317 = 325
+//   running: 16,48,80,81,177,178,180,212,244,276,308,316,317
 
-const _: () = assert!(core::mem::size_of::<EarnConfig>() == 253);
+const _: () = assert!(core::mem::size_of::<EarnConfig>() == 317);

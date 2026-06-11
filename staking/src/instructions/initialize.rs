@@ -9,6 +9,8 @@
 //!   - `rwt_mint` MUST be the canonical earn-RWT mint.
 //!   - `strwt_mint` created with mint authority = StakingConfig PDA.
 //!   - `pool_vault` created as an RWT ATA owned by the StakingConfig PDA.
+//!   - up to 3 immutable pause guardians (slot 0 mandatory; any can pause, only
+//!     `authority` unpauses).
 
 use arlex_lang::prelude::*;
 use pinocchio::cpi::{Seed, Signer};
@@ -56,15 +58,26 @@ pub struct Initialize<'info> {
 
 fn validate_initialize_inputs(
     deployer: &[u8],
-    pause_authority: [u8; 32],
+    pause_authorities: [[u8; 32]; MAX_PAUSE_AUTHORITIES],
     reward_depositor: [u8; 32],
     rwt_mint: [u8; 32],
 ) -> Result<()> {
     if deployer != BOOTSTRAP_AUTHORITY.as_ref() {
         return Err(ProgramError::from(StakingError::UnauthorizedBootstrap));
     }
-    if pause_authority == [0u8; 32] || reward_depositor == [0u8; 32] {
+    // Slot 0 is mandatory — at least one guardian must be able to pause.
+    if pause_authorities[0] == [0u8; 32] || reward_depositor == [0u8; 32] {
         return Err(ProgramError::from(StakingError::ZeroAddress));
+    }
+    // Zeroed slots 1/2 are allowed (= unused). Reject DUPLICATE non-zero entries
+    // so the guardian set stays a true 1-of-N (a duplicated key would silently
+    // reduce the count of independent guardians).
+    for i in 0..MAX_PAUSE_AUTHORITIES {
+        for j in (i + 1)..MAX_PAUSE_AUTHORITIES {
+            if pause_authorities[i] != [0u8; 32] && pause_authorities[i] == pause_authorities[j] {
+                return Err(ProgramError::from(StakingError::DuplicatePauseAuthority));
+            }
+        }
     }
     if rwt_mint == [0u8; 32] || rwt_mint != EARN_RWT_MINT {
         return Err(ProgramError::from(StakingError::InvalidRwtMint));
@@ -90,15 +103,19 @@ fn validate_pool_vault_account(
 
 pub fn handler(
     ctx: Context<Initialize>,
-    pause_authority: [u8; 32],
+    pause_authority_1: [u8; 32],
+    pause_authority_2: [u8; 32],
+    pause_authority_3: [u8; 32],
     reward_depositor: [u8; 32],
 ) -> Result<()> {
+    let pause_authorities = [pause_authority_1, pause_authority_2, pause_authority_3];
+
     // --- Validate inputs before any CPI / account initialization ---
     let mut rwt_mint = [0u8; 32];
     rwt_mint.copy_from_slice(ctx.accounts.rwt_mint.address().as_ref());
     validate_initialize_inputs(
         ctx.accounts.authority.address().as_ref(),
-        pause_authority,
+        pause_authorities,
         reward_depositor,
         rwt_mint,
     )?;
@@ -192,7 +209,7 @@ pub fn handler(
         .copy_from_slice(ctx.accounts.authority.address().as_ref());
     config.pending_authority = [0u8; 32];
     config.has_pending = false;
-    config.pause_authority = pause_authority;
+    config.pause_authorities = pause_authorities;
     config.is_paused = false;
     config.rwt_mint = rwt_mint;
     config
@@ -249,20 +266,24 @@ mod tests {
         assert_eq!(custom_code(err), custom_code(ProgramError::from(expected)),);
     }
 
+    // A valid single-guardian set: slot 0 set, slots 1/2 unused.
+    const GUARDIANS: [[u8; 32]; MAX_PAUSE_AUTHORITIES] = [[1u8; 32], [0u8; 32], [0u8; 32]];
+
     #[test]
     fn initialize_rejects_unpinned_bootstrap_authority_first() {
         assert_err_code(
-            validate_initialize_inputs(&[9u8; 32], [1u8; 32], [2u8; 32], EARN_RWT_MINT),
+            validate_initialize_inputs(&[9u8; 32], GUARDIANS, [2u8; 32], EARN_RWT_MINT),
             StakingError::UnauthorizedBootstrap,
         );
     }
 
     #[test]
     fn initialize_rejects_zero_role_addresses() {
+        // Slot 0 of the guardian set zeroed → ZeroAddress.
         assert_err_code(
             validate_initialize_inputs(
                 BOOTSTRAP_AUTHORITY.as_ref(),
-                [0u8; 32],
+                [[0u8; 32], [0u8; 32], [0u8; 32]],
                 [2u8; 32],
                 EARN_RWT_MINT,
             ),
@@ -271,7 +292,7 @@ mod tests {
         assert_err_code(
             validate_initialize_inputs(
                 BOOTSTRAP_AUTHORITY.as_ref(),
-                [1u8; 32],
+                GUARDIANS,
                 [0u8; 32],
                 EARN_RWT_MINT,
             ),
@@ -280,11 +301,56 @@ mod tests {
     }
 
     #[test]
+    fn initialize_rejects_duplicate_guardians() {
+        // Duplicate across slots 0 and 2.
+        assert_err_code(
+            validate_initialize_inputs(
+                BOOTSTRAP_AUTHORITY.as_ref(),
+                [[1u8; 32], [3u8; 32], [1u8; 32]],
+                [2u8; 32],
+                EARN_RWT_MINT,
+            ),
+            StakingError::DuplicatePauseAuthority,
+        );
+        // Duplicate across slots 1 and 2.
+        assert_err_code(
+            validate_initialize_inputs(
+                BOOTSTRAP_AUTHORITY.as_ref(),
+                [[1u8; 32], [3u8; 32], [3u8; 32]],
+                [2u8; 32],
+                EARN_RWT_MINT,
+            ),
+            StakingError::DuplicatePauseAuthority,
+        );
+    }
+
+    #[cfg(feature = "devnet")]
+    #[test]
+    fn initialize_accepts_single_and_full_guardian_sets() {
+        // [g1, 0, 0] — one guardian, remaining slots unused.
+        assert!(validate_initialize_inputs(
+            BOOTSTRAP_AUTHORITY.as_ref(),
+            [[1u8; 32], [0u8; 32], [0u8; 32]],
+            [2u8; 32],
+            EARN_RWT_MINT,
+        )
+        .is_ok());
+        // [g1, g2, g3] — three distinct guardians.
+        assert!(validate_initialize_inputs(
+            BOOTSTRAP_AUTHORITY.as_ref(),
+            [[1u8; 32], [3u8; 32], [4u8; 32]],
+            [2u8; 32],
+            EARN_RWT_MINT,
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn initialize_rejects_non_canonical_rwt_mint() {
         assert_err_code(
             validate_initialize_inputs(
                 BOOTSTRAP_AUTHORITY.as_ref(),
-                [1u8; 32],
+                GUARDIANS,
                 [2u8; 32],
                 [3u8; 32],
             ),
@@ -293,7 +359,7 @@ mod tests {
         assert_err_code(
             validate_initialize_inputs(
                 BOOTSTRAP_AUTHORITY.as_ref(),
-                [1u8; 32],
+                GUARDIANS,
                 [2u8; 32],
                 [0u8; 32],
             ),
@@ -351,7 +417,7 @@ mod tests {
     fn initialize_accepts_devnet_bootstrap_and_canonical_rwt_mint() {
         assert!(validate_initialize_inputs(
             BOOTSTRAP_AUTHORITY.as_ref(),
-            [1u8; 32],
+            GUARDIANS,
             [2u8; 32],
             EARN_RWT_MINT,
         )

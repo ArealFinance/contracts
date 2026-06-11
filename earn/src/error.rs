@@ -72,4 +72,10 @@ pub enum EarnError {
     // NOTE: appended at the END to preserve existing error-code stability.
     #[msg("Fee destination cannot be the basket vault")]
     FeeDestinationIsBasketVault,
+
+    // ----- Pause guardians -----
+    // NOTE: appended at the END (after FeeDestinationIsBasketVault) to preserve
+    // existing error-code stability.
+    #[msg("Duplicate pause authority")]
+    DuplicatePauseAuthority,
 }

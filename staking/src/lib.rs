@@ -64,13 +64,28 @@ pub mod staking {
     use super::*;
 
     /// One-time bootstrap. Creates StakingConfig PDA, the stRWT mint (auth =
-    /// config PDA), and the RWT pool vault (config-PDA-owned RWT ATA).
+    /// config PDA), the RWT pool vault (config-PDA-owned RWT ATA), and pins the
+    /// pause guardians (up to 3, slot 0 mandatory).
+    ///
+    /// The three pause guardians are passed as separate `[u8; 32]` args (not a
+    /// single `[[u8; 32]; 3]`) because Arlex `ArgsDeserialize` lacks nested
+    /// fixed-array support. The handler assembles them into the `[[u8; 32]; 3]`
+    /// guardian slots; slot 1 is mandatory non-zero, slots 2/3 may be zero
+    /// (= unused).
     pub fn initialize(
         ctx: Context<Initialize>,
-        pause_authority: [u8; 32],
+        pause_authority_1: [u8; 32],
+        pause_authority_2: [u8; 32],
+        pause_authority_3: [u8; 32],
         reward_depositor: [u8; 32],
     ) -> Result<()> {
-        crate::instructions::initialize::handler(ctx, pause_authority, reward_depositor)
+        crate::instructions::initialize::handler(
+            ctx,
+            pause_authority_1,
+            pause_authority_2,
+            pause_authority_3,
+            reward_depositor,
+        )
     }
 
     /// Deposit RWT, mint stRWT at the current rate. `min_strwt_out` is
@@ -100,12 +115,12 @@ pub mod staking {
         crate::instructions::complete_unstake::handler(ctx, nonce)
     }
 
-    /// Pause stake/unstake (emergency stop). Pause-authority-only.
+    /// Pause stake/unstake (emergency stop). Any non-zero pause guardian can pause.
     pub fn pause(ctx: Context<PauseStaking>) -> Result<()> {
         crate::instructions::pause::pause_handler(ctx)
     }
 
-    /// Resume stake/unstake. Pause-authority-only.
+    /// Resume stake/unstake. Authority-only (guardians cannot unpause).
     pub fn unpause(ctx: Context<UnpauseStaking>) -> Result<()> {
         crate::instructions::pause::unpause_handler(ctx)
     }

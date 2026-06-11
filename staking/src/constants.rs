@@ -27,6 +27,12 @@ pub const VIRTUAL_ASSETS: u64 = 10_000_000;
 /// Anti-dust floor: 1 RWT minimum per stake. Bounds rounding leverage.
 pub const MIN_STAKE_AMOUNT: u64 = 1_000_000;
 
+// ===== Pause guardians =====
+/// Up to 3 immutable guardian slots. Any non-zero slot can pause (emergency
+/// brake); ONLY `config.authority` can unpause. Slot 0 must be set at init; the
+/// remaining slots may be zeroed (= unused).
+pub const MAX_PAUSE_AUTHORITIES: usize = 3;
+
 // ===== Deployment pins =====
 // Devnet uses the deployer recorded in data/devnet-addresses.json. The
 // non-devnet placeholder intentionally bricks initialize until real mainnet

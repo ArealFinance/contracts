@@ -1,8 +1,9 @@
 //! `initialize` — bootstrap the `earn` program. One-time, deployer-only.
 //!
 //! Creates the singleton `EarnConfig` PDA at seed `["earn_config"]`, pins the
-//! authority, pause authority, the `basket_vault` USDC ATA (EarnConfig-PDA-
-//! owned), the `dao_fee_destination` USDC ATA, and the earn-RWT mint.
+//! authority, the immutable pause guardians (up to 3 slots; any can pause, only
+//! `authority` unpauses), the `basket_vault` USDC ATA (EarnConfig-PDA-owned),
+//! the `dao_fee_destination` USDC ATA, and the earn-RWT mint.
 //!
 //! Bootstrap is restricted to the pinned `BOOTSTRAP_AUTHORITY`; otherwise the
 //! first signer to call `initialize` could capture the singleton config PDA. The
@@ -59,7 +60,7 @@ pub struct Initialize<'info> {
 fn validate_bootstrap_inputs(
     deployer: &[u8],
     authority: [u8; 32],
-    pause_authority: [u8; 32],
+    pause_authorities: [[u8; 32]; MAX_PAUSE_AUTHORITIES],
 ) -> Result<()> {
     if deployer != BOOTSTRAP_AUTHORITY.as_ref() {
         return Err(ProgramError::from(EarnError::UnauthorizedBootstrap));
@@ -67,8 +68,19 @@ fn validate_bootstrap_inputs(
     if authority == [0u8; 32] {
         return Err(ProgramError::from(EarnError::ZeroDestination));
     }
-    if pause_authority == [0u8; 32] {
+    // Slot 0 is mandatory — at least one guardian must be able to pause.
+    if pause_authorities[0] == [0u8; 32] {
         return Err(ProgramError::from(EarnError::InvalidPauseAuthority));
+    }
+    // Zeroed slots 1/2 are allowed (= unused). Reject DUPLICATE non-zero entries
+    // so the guardian set stays a true 1-of-N (a duplicated key would silently
+    // reduce the count of independent guardians).
+    for i in 0..MAX_PAUSE_AUTHORITIES {
+        for j in (i + 1)..MAX_PAUSE_AUTHORITIES {
+            if pause_authorities[i] != [0u8; 32] && pause_authorities[i] == pause_authorities[j] {
+                return Err(ProgramError::from(EarnError::DuplicatePauseAuthority));
+            }
+        }
     }
 
     Ok(())
@@ -132,13 +144,17 @@ fn validate_initialize_token_accounts(
 pub fn handler(
     ctx: Context<Initialize>,
     authority: [u8; 32],
-    pause_authority: [u8; 32],
+    pause_authority_1: [u8; 32],
+    pause_authority_2: [u8; 32],
+    pause_authority_3: [u8; 32],
 ) -> Result<()> {
+    let pause_authorities = [pause_authority_1, pause_authority_2, pause_authority_3];
+
     // --- Validate inputs ---
     validate_bootstrap_inputs(
         ctx.accounts.deployer.address().as_ref(),
         authority,
-        pause_authority,
+        pause_authorities,
     )?;
 
     let mut usdc_mint = [0u8; 32];
@@ -222,7 +238,7 @@ pub fn handler(
     config.authority = authority;
     config.pending_authority = [0u8; 32];
     config.has_pending = false;
-    config.pause_authority = pause_authority;
+    config.pause_authorities = pause_authorities;
     config.is_paused = false;
     config.mint_fee_bps = DEFAULT_MINT_FEE_BPS;
     config
@@ -281,27 +297,79 @@ mod tests {
     #[test]
     fn bootstrap_inputs_require_pinned_deployer_and_nonzero_authorities() {
         let authority = [1u8; 32];
-        let pause_authority = [2u8; 32];
+        let pause_authorities = [[2u8; 32], [0u8; 32], [0u8; 32]];
         assert!(validate_bootstrap_inputs(
             BOOTSTRAP_AUTHORITY.as_ref(),
             authority,
-            pause_authority,
+            pause_authorities,
         )
         .is_ok());
 
         let wrong_deployer = [9u8; 32];
         assert_err_code(
-            validate_bootstrap_inputs(&wrong_deployer, authority, pause_authority),
+            validate_bootstrap_inputs(&wrong_deployer, authority, pause_authorities),
             EarnError::UnauthorizedBootstrap,
         );
         assert_err_code(
-            validate_bootstrap_inputs(BOOTSTRAP_AUTHORITY.as_ref(), [0u8; 32], pause_authority),
+            validate_bootstrap_inputs(BOOTSTRAP_AUTHORITY.as_ref(), [0u8; 32], pause_authorities),
             EarnError::ZeroDestination,
         );
+    }
+
+    #[test]
+    fn bootstrap_inputs_reject_zeroed_guardian_slot_zero() {
+        // Slot 0 is mandatory — at least one guardian must be able to pause.
+        let authority = [1u8; 32];
         assert_err_code(
-            validate_bootstrap_inputs(BOOTSTRAP_AUTHORITY.as_ref(), authority, [0u8; 32]),
+            validate_bootstrap_inputs(
+                BOOTSTRAP_AUTHORITY.as_ref(),
+                authority,
+                [[0u8; 32], [2u8; 32], [3u8; 32]],
+            ),
             EarnError::InvalidPauseAuthority,
         );
+    }
+
+    #[test]
+    fn bootstrap_inputs_reject_duplicate_guardians() {
+        let authority = [1u8; 32];
+        // Duplicate across slots 0 and 2.
+        assert_err_code(
+            validate_bootstrap_inputs(
+                BOOTSTRAP_AUTHORITY.as_ref(),
+                authority,
+                [[2u8; 32], [3u8; 32], [2u8; 32]],
+            ),
+            EarnError::DuplicatePauseAuthority,
+        );
+        // Duplicate across slots 1 and 2.
+        assert_err_code(
+            validate_bootstrap_inputs(
+                BOOTSTRAP_AUTHORITY.as_ref(),
+                authority,
+                [[2u8; 32], [3u8; 32], [3u8; 32]],
+            ),
+            EarnError::DuplicatePauseAuthority,
+        );
+    }
+
+    #[test]
+    fn bootstrap_inputs_accept_single_and_full_guardian_sets() {
+        let authority = [1u8; 32];
+        // [g1, 0, 0] — one guardian, remaining slots unused.
+        assert!(validate_bootstrap_inputs(
+            BOOTSTRAP_AUTHORITY.as_ref(),
+            authority,
+            [[2u8; 32], [0u8; 32], [0u8; 32]],
+        )
+        .is_ok());
+        // [g1, g2, g3] — three distinct guardians.
+        assert!(validate_bootstrap_inputs(
+            BOOTSTRAP_AUTHORITY.as_ref(),
+            authority,
+            [[2u8; 32], [3u8; 32], [4u8; 32]],
+        )
+        .is_ok());
     }
 
     #[test]

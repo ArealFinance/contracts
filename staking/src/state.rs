@@ -25,7 +25,7 @@ pub struct StakingConfig {
     pub authority: [u8; 32],          // 32 — V1: single key, V2: multisig
     pub pending_authority: [u8; 32],  // 32 — zeroed = no pending transfer
     pub has_pending: bool,            // 1
-    pub pause_authority: [u8; 32],    // 32 — immutable after init
+    pub pause_authorities: [[u8; 32]; 3], // 96 — immutable guardians (change only via program upgrade); any can pause, only `authority` unpauses; a zeroed slot = unused
     pub is_paused: bool,              // 1  — gates stake/unstake (not deposit_rewards)
     pub rwt_mint: [u8; 32],           // 32 — staked token (earn-RWT)
     pub strwt_mint: [u8; 32],         // 32 — share token (mint authority = this PDA)
@@ -37,10 +37,11 @@ pub struct StakingConfig {
     pub min_stake_amount: u64,        // 8  — anti-dust floor, tunable
     pub bump: u8,                     // 1  — PDA bump
 }
-// SIZE = 32+32+1+32+1+32+32+32+32+8+8+8+8+1 = 259
-// SPACE = 8 (discriminator) + 259 = 267
+// SIZE = 32+32+1+96+1+32+32+32+32+8+8+8+8+1 = 323
+// SPACE = 8 (discriminator) + 323 = 331
+//   running: 32,64,65,161,162,194,226,258,290,298,306,314,322,323
 
-const _: () = assert!(core::mem::size_of::<StakingConfig>() == 259);
+const _: () = assert!(core::mem::size_of::<StakingConfig>() == 323);
 
 // =============================================================================
 // UnstakeTicket — per-unstake cooldown receipt.

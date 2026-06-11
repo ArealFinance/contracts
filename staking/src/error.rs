@@ -54,4 +54,9 @@ pub enum StakingError {
     ZeroAddress,
     #[msg("Signer is not the bootstrap authority")]
     UnauthorizedBootstrap,
+
+    // ----- Pause guardians -----
+    // NOTE: appended at the END to preserve existing error-code stability.
+    #[msg("Duplicate pause authority")]
+    DuplicatePauseAuthority,
 }

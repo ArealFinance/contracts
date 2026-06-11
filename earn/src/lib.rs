@@ -70,13 +70,28 @@ pub mod earn {
     use super::*;
 
     /// One-time bootstrap. Creates EarnConfig PDA, pins mints / basket_vault /
-    /// dao_fee_destination / pause_authority. Initial NAV is implicit ($1.00).
+    /// dao_fee_destination / pause guardians (up to 3, slot 0 mandatory).
+    /// Initial NAV is implicit ($1.00).
+    ///
+    /// The three pause guardians are passed as separate `[u8; 32]` args (not a
+    /// single `[[u8; 32]; 3]`) because Arlex `ArgsDeserialize` lacks nested
+    /// fixed-array support. The handler assembles them into the `[[u8; 32]; 3]`
+    /// guardian slots; slot 1 is mandatory non-zero, slots 2/3 may be zero
+    /// (= unused).
     pub fn initialize(
         ctx: Context<Initialize>,
         authority: [u8; 32],
-        pause_authority: [u8; 32],
+        pause_authority_1: [u8; 32],
+        pause_authority_2: [u8; 32],
+        pause_authority_3: [u8; 32],
     ) -> Result<()> {
-        crate::instructions::initialize::handler(ctx, authority, pause_authority)
+        crate::instructions::initialize::handler(
+            ctx,
+            authority,
+            pause_authority_1,
+            pause_authority_2,
+            pause_authority_3,
+        )
     }
 
     /// User deposits USDC at Book NAV (+1% fee), receives earn-RWT.
@@ -105,12 +120,12 @@ pub mod earn {
         crate::instructions::writedown_capital::handler(ctx, amount, reason_code)
     }
 
-    /// Pause mint flow (emergency stop). Pause-authority-only.
+    /// Pause mint flow (emergency stop). Any non-zero pause guardian can pause.
     pub fn pause(ctx: Context<PauseEarn>) -> Result<()> {
         crate::instructions::pause::pause_handler(ctx)
     }
 
-    /// Resume mint flow. Pause-authority-only.
+    /// Resume mint flow. Authority-only (guardians cannot unpause).
     pub fn unpause(ctx: Context<UnpauseEarn>) -> Result<()> {
         crate::instructions::pause::unpause_handler(ctx)
     }

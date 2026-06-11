@@ -2,7 +2,7 @@
 //!
 //! Lets the authority retune the mint fee (bps), the minimum mint amount, and
 //! the DAO fee destination. The `basket_vault`, `rwt_mint`, `usdc_mint`, and
-//! `pause_authority` are IMMUTABLE — set once at `initialize`.
+//! `pause_authorities` are IMMUTABLE — set once at `initialize`.
 //!
 //! `mint_fee_bps` is capped at `MAX_MINT_FEE_BPS` (10%); `min_mint_amount` is
 //! bounded to `[MIN_MINT_AMOUNT, MAX_MIN_MINT_AMOUNT]` so the authority can

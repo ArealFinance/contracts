@@ -28,6 +28,12 @@ pub const MIN_MINT_AMOUNT: u64 = 1_000_000; // $1.00 minimum deposit (anti-dust)
 // authority from soft-bricking minting by raising the floor out of reach.
 pub const MAX_MIN_MINT_AMOUNT: u64 = 1_000_000_000_000; // $1,000,000
 
+// ===== Pause guardians =====
+// Up to 3 immutable guardian slots. Any non-zero slot can pause (emergency
+// brake); ONLY `config.authority` can unpause. Slot 0 must be set at init; the
+// remaining slots may be zeroed (= unused).
+pub const MAX_PAUSE_AUTHORITIES: usize = 3;
+
 // ===== Bootstrap authority =====
 // Devnet uses the deployer recorded in data/devnet-addresses.json. The
 // non-devnet placeholder intentionally bricks initialize until a real mainnet
