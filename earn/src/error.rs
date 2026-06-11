@@ -65,4 +65,10 @@ pub enum EarnError {
     // ----- Accounting integrity -----
     #[msg("Fee destination cannot be the basket vault")]
     FeeDestinationIsBasketVault,
+
+    // ----- Basket vault custody (external treasury) -----
+    #[msg("Basket vault is not configured")]
+    BasketVaultNotSet,
+    #[msg("Basket vault cannot be the zero address")]
+    ZeroBasketVault,
 }

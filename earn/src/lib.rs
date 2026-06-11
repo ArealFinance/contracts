@@ -68,8 +68,9 @@ declare_id!("11111111111111111111111111111111");
 pub mod earn {
     use super::*;
 
-    /// One-time bootstrap. Creates EarnConfig PDA, pins mints / basket_vault /
-    /// dao_fee_destination. Initial NAV is implicit ($1.00).
+    /// One-time bootstrap. Creates EarnConfig PDA, pins mints /
+    /// dao_fee_destination. `basket_vault` is left unset (external treasury,
+    /// set later via update_config). Initial NAV is implicit ($1.00).
     pub fn initialize(ctx: Context<Initialize>, authority: [u8; 32]) -> Result<()> {
         crate::instructions::initialize::handler(ctx, authority)
     }
@@ -96,19 +97,21 @@ pub mod earn {
         crate::instructions::writedown_capital::handler(ctx, amount, reason_code)
     }
 
-    /// Authority-only admin tuning of mint fee, min mint amount, and the
-    /// DAO fee destination.
+    /// Authority-only admin tuning of mint fee, min mint amount, the DAO fee
+    /// destination, and the external `basket_vault` USDC treasury account.
     pub fn update_config(
         ctx: Context<UpdateConfig>,
         mint_fee_bps: u16,
         min_mint_amount: u64,
         dao_fee_destination: [u8; 32],
+        basket_vault: [u8; 32],
     ) -> Result<()> {
         crate::instructions::update_config::handler(
             ctx,
             mint_fee_bps,
             min_mint_amount,
             dao_fee_destination,
+            basket_vault,
         )
     }
 

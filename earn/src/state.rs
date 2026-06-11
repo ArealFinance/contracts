@@ -15,8 +15,10 @@ use arlex_lang::prelude::*;
 //   - writedown_capital — -= amount, supply unchanged → NAV falls.
 //
 // One vault, not three: liquidity provisioning and the income split are
-// off-chain (see docs/architecture/earn-layers.mdx). The contract holds
-// only basket capital — `basket_vault` (USDC, EarnConfig-PDA-owned).
+// off-chain (see docs/architecture/earn-layers.mdx). The program does NOT
+// custody USDC — `basket_vault` is an EXTERNAL USDC treasury token account
+// (multisig-owned), set by the authority via `update_config`. mint/income
+// deposits flow there; the program only tracks `total_invested_capital`.
 //
 // NOTE: Option<Pubkey> → [u8;32]+bool for repr(C,packed) compatibility.
 // Arlex #[account] uses repr(C,packed) which doesn't support Option<T>.
@@ -44,7 +46,7 @@ pub struct EarnConfig {
     pub pending_authority: [u8; 32],   // 32 (zeroed = no pending transfer)
     pub has_pending: bool,             // 1
     pub mint_fee_bps: u16,             // 2 — default 100 (1%); tunable via update_config
-    pub basket_vault: [u8; 32],        // 32 — USDC vault, EarnConfig-PDA-owned (immutable)
+    pub basket_vault: [u8; 32],        // 32 — USDC treasury token account; authority-set via update_config; owner unconstrained (external multisig) — program does NOT custody USDC
     pub dao_fee_destination: [u8; 32], // 32 — USDC ATA for the 1% commission (tunable)
     pub rwt_mint: [u8; 32],            // 32 — the earn-RWT mint (mint authority = EarnConfig PDA)
     pub usdc_mint: [u8; 32],           // 32 — deposit currency

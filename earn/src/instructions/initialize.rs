@@ -1,16 +1,17 @@
 //! `initialize` — bootstrap the `earn` program. One-time, deployer-only.
 //!
 //! Creates the singleton `EarnConfig` PDA at seed `["earn_config"]`, pins the
-//! authority, the `basket_vault` USDC ATA (EarnConfig-PDA-owned), the
-//! `dao_fee_destination` USDC ATA, and the earn-RWT mint.
+//! authority, the `dao_fee_destination` USDC ATA, and the earn-RWT mint.
+//!
+//! The program does NOT custody USDC: `basket_vault` is an EXTERNAL treasury
+//! token account (multisig-owned), so it is NOT created or pinned here. It is
+//! left zeroed at init and set later by the authority via `update_config`.
 //!
 //! Bootstrap is restricted to the pinned `BOOTSTRAP_AUTHORITY`; otherwise the
 //! first signer to call `initialize` could capture the singleton config PDA. The
 //! earn-RWT mint MUST already be fresh and controlled by the EarnConfig PDA.
 //!
-//! Initial NAV is implicit ($1.00 via the `total_rwt_supply == 0` guard). The
-//! basket vault must be empty at bootstrap; otherwise the first minter could
-//! capture prefunded capital while buying at the zero-supply initial NAV.
+//! Initial NAV is implicit ($1.00 via the `total_rwt_supply == 0` guard).
 
 use arlex_lang::prelude::*;
 use pinocchio::cpi::{Seed, Signer};
@@ -22,7 +23,7 @@ use crate::events::EarnInitialized;
 use crate::state::EarnConfig;
 use crate::validation::{
     read_mint_authority, read_mint_decimals, read_mint_freeze_authority, read_mint_supply,
-    read_token_account_amount, read_token_account_mint, read_token_account_owner,
+    read_token_account_mint,
 };
 
 #[derive(Accounts)]
@@ -43,10 +44,6 @@ pub struct Initialize<'info> {
     /// USDC mint (validation only; pinned into config).
     #[account(owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
     pub usdc_mint: &'info AccountView,
-
-    /// USDC vault owned by the EarnConfig PDA — receives mint bodies + income.
-    #[account(owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
-    pub basket_vault: &'info AccountView,
 
     /// USDC ATA receiving the 1% commission (Areal revenue).
     #[account(owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
@@ -90,29 +87,14 @@ fn validate_rwt_mint_for_initialize(
     Ok(())
 }
 
-fn validate_initialize_token_accounts(
-    basket_mint: [u8; 32],
-    basket_owner: [u8; 32],
-    basket_amount: u64,
-    dao_fee_mint: [u8; 32],
-    usdc_mint: [u8; 32],
-    config_pda: [u8; 32],
-) -> Result<()> {
+fn validate_initialize_token_accounts(dao_fee_mint: [u8; 32], usdc_mint: [u8; 32]) -> Result<()> {
     // M1: pin the deposit currency to the canonical USDC mint. The passed
     // `usdc_mint` account is only as trustworthy as the deployer; anchoring it
     // to the compiled-in constant prevents bootstrapping the singleton config
-    // against a fake/attacker-controlled mint. basket_vault and
-    // dao_fee_destination are then transitively pinned to USDC below.
+    // against a fake/attacker-controlled mint. dao_fee_destination is then
+    // transitively pinned to USDC below. basket_vault is NOT validated here —
+    // it is an external treasury account set later via `update_config`.
     if usdc_mint != USDC_MINT {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
-    if basket_mint != usdc_mint {
-        return Err(ProgramError::from(EarnError::InvalidTokenAccount));
-    }
-    if basket_owner != config_pda {
-        return Err(ProgramError::from(EarnError::InvalidTokenOwner));
-    }
-    if basket_amount != 0 {
         return Err(ProgramError::from(EarnError::InvalidTokenAccount));
     }
     if dao_fee_mint != usdc_mint {
@@ -145,19 +127,10 @@ pub fn handler(ctx: Context<Initialize>, authority: [u8; 32]) -> Result<()> {
         config_pda,
     )?;
 
-    // basket_vault and dao_fee_destination must both hold USDC.
-    let basket_mint = read_token_account_mint(ctx.accounts.basket_vault)?;
-    let basket_owner = read_token_account_owner(ctx.accounts.basket_vault)?;
-    let basket_amount = read_token_account_amount(ctx.accounts.basket_vault)?;
+    // dao_fee_destination must hold USDC. basket_vault is NOT validated here —
+    // it is set later via `update_config` (external treasury account).
     let dao_fee_mint = read_token_account_mint(ctx.accounts.dao_fee_destination)?;
-    validate_initialize_token_accounts(
-        basket_mint,
-        basket_owner,
-        basket_amount,
-        dao_fee_mint,
-        usdc_mint,
-        config_pda,
-    )?;
+    validate_initialize_token_accounts(dao_fee_mint, usdc_mint)?;
 
     // SECURITY (L1): `dao_fee_destination` is authority-trusted. It is pinned by
     // mint (must be USDC, checked above) and must be non-zero, but its SPL
@@ -171,17 +144,10 @@ pub fn handler(ctx: Context<Initialize>, authority: [u8; 32]) -> Result<()> {
         return Err(ProgramError::from(EarnError::InvalidFeeDestination));
     }
 
-    // SECURITY (L1): the fee destination MUST differ from the basket vault.
-    // In `mint_rwt` the deposit body lands in `basket_vault` and is counted into
-    // `total_invested_capital`, while the 1% fee lands in `dao_fee_destination`
-    // and is EXCLUDED from capital. If both point at the same token account, the
-    // fee physically accrues in the basket but is never accounted — the vault
-    // balance drifts above tracked capital, desyncing the NAV bookkeeping.
-    if ctx.accounts.dao_fee_destination.address().as_ref()
-        == ctx.accounts.basket_vault.address().as_ref()
-    {
-        return Err(ProgramError::from(EarnError::FeeDestinationIsBasketVault));
-    }
+    // NOTE: the init-time `FeeDestinationIsBasketVault` check is removed — the
+    // basket vault is zero at init (set later via `update_config`), so the
+    // dao_fee != basket_vault invariant is enforced there against the two
+    // incoming values, not here.
 
     // --- Create the config PDA after all bootstrap gates pass ---
     let config_bump_arr = [config_bump];
@@ -208,9 +174,9 @@ pub fn handler(ctx: Context<Initialize>, authority: [u8; 32]) -> Result<()> {
     config.pending_authority = [0u8; 32];
     config.has_pending = false;
     config.mint_fee_bps = DEFAULT_MINT_FEE_BPS;
-    config
-        .basket_vault
-        .copy_from_slice(ctx.accounts.basket_vault.address().as_ref());
+    // basket_vault is left zeroed at init: the program does NOT custody USDC.
+    // The authority sets the external treasury account later via update_config.
+    config.basket_vault = [0u8; 32];
     config.dao_fee_destination = dao_fee_destination;
     config
         .rwt_mint
@@ -231,11 +197,9 @@ pub fn handler(ctx: Context<Initialize>, authority: [u8; 32]) -> Result<()> {
             arr.copy_from_slice(ctx.accounts.rwt_mint.address().as_ref());
             arr
         },
-        basket_vault: {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(ctx.accounts.basket_vault.address().as_ref());
-            arr
-        },
+        // basket_vault is unset at init (external treasury, set via
+        // update_config). Emit zero for event-schema stability.
+        basket_vault: [0u8; 32],
         dao_fee_destination,
         initial_nav: INITIAL_NAV,
         timestamp: clock.unix_timestamp,
@@ -323,44 +287,21 @@ mod tests {
     }
 
     #[test]
-    fn initialize_requires_usdc_vault_owned_by_config_pda() {
-        // M1: usdc_mint must equal the canonical USDC_MINT constant.
+    fn initialize_pins_usdc_mint_and_dao_fee_currency() {
+        // M1: usdc_mint must equal the canonical USDC_MINT constant; the dao fee
+        // destination must hold USDC. basket_vault is NOT validated at init — it
+        // is an external treasury account set later via update_config.
         let usdc_mint = USDC_MINT;
-        let config_pda = [2u8; 32];
-        assert!(validate_initialize_token_accounts(
-            usdc_mint, config_pda, 0, usdc_mint, usdc_mint, config_pda,
-        )
-        .is_ok());
+        assert!(validate_initialize_token_accounts(usdc_mint, usdc_mint).is_ok());
 
         // M1: a non-canonical deposit mint is rejected.
         assert_err_code(
-            validate_initialize_token_accounts(
-                [1u8; 32], config_pda, 0, [1u8; 32], [1u8; 32], config_pda,
-            ),
+            validate_initialize_token_accounts(usdc_mint, [1u8; 32]),
             EarnError::InvalidTokenAccount,
         );
+        // dao_fee_destination not holding USDC is rejected.
         assert_err_code(
-            validate_initialize_token_accounts(
-                [3u8; 32], config_pda, 0, usdc_mint, usdc_mint, config_pda,
-            ),
-            EarnError::InvalidTokenAccount,
-        );
-        assert_err_code(
-            validate_initialize_token_accounts(
-                usdc_mint, [4u8; 32], 0, usdc_mint, usdc_mint, config_pda,
-            ),
-            EarnError::InvalidTokenOwner,
-        );
-        assert_err_code(
-            validate_initialize_token_accounts(
-                usdc_mint, config_pda, 42, usdc_mint, usdc_mint, config_pda,
-            ),
-            EarnError::InvalidTokenAccount,
-        );
-        assert_err_code(
-            validate_initialize_token_accounts(
-                usdc_mint, config_pda, 0, [5u8; 32], usdc_mint, config_pda,
-            ),
+            validate_initialize_token_accounts([5u8; 32], usdc_mint),
             EarnError::InvalidFeeDestination,
         );
     }

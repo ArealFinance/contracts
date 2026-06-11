@@ -1,12 +1,13 @@
 //! `add_to_basket` — authority / off-chain executor reinvests income.
 //!
-//! The authority moves USDC into `basket_vault` and the contract records the
-//! inflow into `total_invested_capital`. No RWT minted → NAV ↑ for all
-//! existing holders. This is the *sole* NAV-growth channel (the off-chain
-//! layer buys RWA / records appreciation, then calls this with the value).
+//! The authority moves USDC into `basket_vault` (an external treasury account
+//! set via `update_config`) and the contract records the inflow into
+//! `total_invested_capital`. No RWT minted → NAV ↑ for all existing holders.
+//! This is the *sole* NAV-growth channel (the off-chain layer buys RWA /
+//! records appreciation, then calls this with the value).
 //!
 //! Source is any USDC ATA owned by the authority signer; the contract
-//! constrains only the destination (`basket_vault`).
+//! constrains only that the destination matches the configured `basket_vault`.
 //!
 //! Guard: RWT supply must already be non-zero. Otherwise authority could preload
 //! capital while Book NAV still uses the INITIAL_NAV zero-supply guard, allowing
@@ -43,7 +44,8 @@ pub struct AddToBasket<'info> {
     #[account(mut, owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
     pub authority_source: &'info AccountView,
 
-    /// Basket vault USDC ATA (EarnConfig-PDA-owned).
+    /// Basket vault USDC token account (external treasury, set via
+    /// update_config). Owner intentionally unconstrained.
     #[account(mut, owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
     pub basket_vault: &'info AccountView,
 
@@ -70,6 +72,11 @@ pub fn handler(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
     // --- Checks ---
     if amount == 0 {
         return Err(ProgramError::from(EarnError::ZeroAmount));
+    }
+    // The basket vault is an EXTERNAL treasury account set via update_config.
+    // If it is still unset (zero), income deposits must not proceed.
+    if config.basket_vault == [0u8; 32] {
+        return Err(ProgramError::from(EarnError::BasketVaultNotSet));
     }
     if ctx.accounts.rwt_mint.address().as_ref() != config.rwt_mint.as_ref() {
         return Err(ProgramError::from(EarnError::InvalidRwtMint));

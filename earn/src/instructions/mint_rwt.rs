@@ -49,7 +49,8 @@ pub struct MintRwt<'info> {
     #[account(mut, owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
     pub user_rwt: &'info AccountView,
 
-    /// Basket vault USDC ATA (EarnConfig-PDA-owned) — receives the body.
+    /// Basket vault USDC token account (external treasury, set via
+    /// update_config) — receives the body. Owner intentionally unconstrained.
     #[account(mut, owner = Address::new_from_array(SPL_TOKEN_PROGRAM))]
     pub basket_vault: &'info AccountView,
 
@@ -81,6 +82,13 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
         }
         if min_rwt_out == 0 {
             return Err(ProgramError::from(EarnError::ZeroSlippage));
+        }
+
+        // The basket vault is an EXTERNAL treasury account set via update_config.
+        // If it is still unset (zero), minting must not proceed — the deposit
+        // body has no configured destination. Guard before any pricing.
+        if config.basket_vault == [0u8; 32] {
+            return Err(ProgramError::from(EarnError::BasketVaultNotSet));
         }
 
         // Validate accounts match config state.

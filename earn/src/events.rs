@@ -52,12 +52,15 @@ pub struct CapitalWrittenDown {
     pub timestamp: i64,
 }
 
-/// Emitted on `update_config`.
+/// Emitted on `update_config`. `basket_vault` is the (re)configured external
+/// USDC treasury account — recorded for the redirect audit trail since the
+/// program does not custody USDC and the account owner is unconstrained.
 #[event]
 pub struct EarnConfigUpdated {
     pub mint_fee_bps: u16,
     pub min_mint_amount: u64,
     pub dao_fee_destination: [u8; 32],
+    pub basket_vault: [u8; 32],
     pub timestamp: i64,
 }
 

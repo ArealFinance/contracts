@@ -1,13 +1,18 @@
 //! `update_config` — authority-only admin tuning.
 //!
-//! Lets the authority retune the mint fee (bps), the minimum mint amount, and
-//! the DAO fee destination. The `basket_vault`, `rwt_mint`, `usdc_mint`, and
-//! initial authority are set once at `initialize`.
+//! Lets the authority retune the mint fee (bps), the minimum mint amount, the
+//! DAO fee destination, and the `basket_vault` (external USDC treasury account).
+//! The `rwt_mint`, `usdc_mint`, and initial authority are set once at
+//! `initialize`.
 //!
 //! `mint_fee_bps` is capped at `MAX_MINT_FEE_BPS` (10%); `min_mint_amount` is
 //! bounded to `[MIN_MINT_AMOUNT, MAX_MIN_MINT_AMOUNT]` so the authority can
 //! neither lower it below the anti-dust floor nor raise it high enough to
-//! soft-brick minting; `dao_fee_destination` cannot be the zero address.
+//! soft-brick minting; `dao_fee_destination` cannot be the zero address;
+//! `basket_vault` cannot be the zero address and must differ from
+//! `dao_fee_destination`. The program does NOT custody USDC — `basket_vault`
+//! is an external (multisig-owned) treasury account; its owner is intentionally
+//! unconstrained, so the redirect is recorded in `EarnConfigUpdated` for audit.
 
 use arlex_lang::prelude::*;
 use pinocchio::sysvars::{clock::Clock, Sysvar};
@@ -42,11 +47,17 @@ fn validate_update_config_inputs(
     if dao_fee_destination == [0u8; 32] {
         return Err(ProgramError::from(EarnError::InvalidFeeDestination));
     }
-    // SECURITY (L1): the fee destination MUST differ from the immutable basket
+    // The basket vault is an external treasury account set here. It must be a
+    // real address: a zero basket_vault would soft-brick mint/income deposits.
+    if basket_vault == [0u8; 32] {
+        return Err(ProgramError::from(EarnError::ZeroBasketVault));
+    }
+    // SECURITY (L1): the fee destination MUST differ from the (new) basket
     // vault. mint_rwt routes the deposit body into the basket (counted into
     // capital) and the 1% fee into dao_fee_destination (EXCLUDED from capital);
     // collapsing them onto one account would leak fees into the basket without
     // accounting, drifting the vault balance above tracked capital (NAV desync).
+    // Both values are the incoming ones, checked against each other.
     if dao_fee_destination == basket_vault {
         return Err(ProgramError::from(EarnError::FeeDestinationIsBasketVault));
     }
@@ -66,15 +77,15 @@ pub fn handler(
     mint_fee_bps: u16,
     min_mint_amount: u64,
     dao_fee_destination: [u8; 32],
+    basket_vault: [u8; 32],
 ) -> Result<()> {
     // `mut` binding: field writes go through the guard's DerefMut. No CPI.
     EarnConfig::assert_account_size(ctx.accounts.earn_config)?;
     let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---
-    // Copy the packed field to a local before comparing to avoid an unaligned
-    // reference into the repr(C, packed) struct. `basket_vault` is immutable.
-    let basket_vault = config.basket_vault;
+    // basket_vault is the INCOMING external treasury account; the dao_fee !=
+    // basket_vault invariant is now enforced against the two incoming values.
     validate_update_config_inputs(
         mint_fee_bps,
         min_mint_amount,
@@ -86,6 +97,7 @@ pub fn handler(
     config.mint_fee_bps = mint_fee_bps;
     config.min_mint_amount = min_mint_amount;
     config.dao_fee_destination = dao_fee_destination;
+    config.basket_vault = basket_vault;
 
     // --- Emit event ---
     let clock = Clock::get()?;
@@ -93,6 +105,7 @@ pub fn handler(
         mint_fee_bps,
         min_mint_amount,
         dao_fee_destination,
+        basket_vault,
         timestamp: clock.unix_timestamp,
     });
 
@@ -161,11 +174,26 @@ mod tests {
 
     #[test]
     fn update_config_rejects_fee_destination_equal_to_basket_vault() {
-        // L1: collapsing the fee destination onto the basket vault is rejected —
-        // it would leak unaccounted fees into the basket and desync NAV.
+        // L1: collapsing the fee destination onto the (incoming) basket vault is
+        // rejected — it would leak unaccounted fees into the basket and desync NAV.
         assert_err_code(
             validate_update_config_inputs(DEFAULT_MINT_FEE_BPS, MIN_MINT_AMOUNT, BASKET, BASKET),
             EarnError::FeeDestinationIsBasketVault,
+        );
+    }
+
+    #[test]
+    fn update_config_rejects_zero_basket_vault() {
+        // A zero basket_vault is rejected: the external treasury account must be
+        // a real address or mint/income deposits would be soft-bricked.
+        assert_err_code(
+            validate_update_config_inputs(
+                DEFAULT_MINT_FEE_BPS,
+                MIN_MINT_AMOUNT,
+                [1u8; 32],
+                [0u8; 32],
+            ),
+            EarnError::ZeroBasketVault,
         );
     }
 
