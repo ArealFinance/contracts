@@ -71,4 +71,8 @@ pub enum EarnError {
     BasketVaultNotSet,
     #[msg("Basket vault cannot be the zero address")]
     ZeroBasketVault,
+
+    // ----- Genesis (one-time founder seed) -----
+    #[msg("Genesis seed already complete (supply is non-zero)")]
+    GenesisAlreadyComplete,
 }

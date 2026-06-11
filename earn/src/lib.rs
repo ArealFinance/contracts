@@ -54,6 +54,7 @@ use instructions::add_to_basket::AddToBasket;
 use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
 use instructions::initialize::Initialize;
 use instructions::mint_rwt::MintRwt;
+use instructions::seed_genesis::SeedGenesis;
 use instructions::update_config::UpdateConfig;
 use instructions::writedown_capital::WritedownCapital;
 
@@ -79,6 +80,13 @@ pub mod earn {
     /// `min_rwt_out`: slippage protection (revert if output < minimum).
     pub fn mint_rwt(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Result<()> {
         crate::instructions::mint_rwt::handler(ctx, usdc_amount, min_rwt_out)
+    }
+
+    /// One-time founder genesis mint. Records an off-chain RWA's value as the
+    /// initial `total_invested_capital` and mints the matching earn-RWT at NAV
+    /// $1.00 — NO USDC deposit. Bootstrap-gated, guarded by supply == 0.
+    pub fn seed_genesis(ctx: Context<SeedGenesis>, amount: u64) -> Result<()> {
+        crate::instructions::seed_genesis::handler(ctx, amount)
     }
 
     /// Authority / off-chain executor reinvests income into the basket.

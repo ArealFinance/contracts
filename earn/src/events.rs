@@ -77,3 +77,15 @@ pub struct AuthorityTransferAccepted {
     pub new_authority: [u8; 32],
     pub timestamp: i64,
 }
+
+/// Emitted once on `seed_genesis` — the founder's one-time genesis mint backed
+/// by an off-chain real-world asset. `capital == amount` and `nav == INITIAL_NAV`
+/// ($1.00); no USDC was deposited.
+#[event]
+pub struct GenesisSeeded {
+    pub recipient: [u8; 32], // treasury earn-RWT ATA that received the mint
+    pub amount: u64,         // RWT minted at genesis
+    pub capital: u128,       // total_invested_capital set at genesis (== amount)
+    pub nav: u64,            // NAV at genesis (== INITIAL_NAV, $1.00)
+    pub timestamp: i64,
+}
