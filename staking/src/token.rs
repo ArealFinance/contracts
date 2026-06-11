@@ -28,7 +28,9 @@ pub fn read_token_account_amount(account: &AccountView) -> core::result::Result<
 }
 
 /// Read `mint` (bytes 0..32) of an SPL Token Account.
-pub fn read_token_account_mint(account: &AccountView) -> core::result::Result<[u8; 32], ProgramError> {
+pub fn read_token_account_mint(
+    account: &AccountView,
+) -> core::result::Result<[u8; 32], ProgramError> {
     let data = unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) };
     if data.len() < 32 {
         return Err(ProgramError::InvalidAccountData);
@@ -39,7 +41,9 @@ pub fn read_token_account_mint(account: &AccountView) -> core::result::Result<[u
 }
 
 /// Read `owner` (bytes 32..64) of an SPL Token Account.
-pub fn read_token_account_owner(account: &AccountView) -> core::result::Result<[u8; 32], ProgramError> {
+pub fn read_token_account_owner(
+    account: &AccountView,
+) -> core::result::Result<[u8; 32], ProgramError> {
     let data = unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) };
     if data.len() < 64 {
         return Err(ProgramError::InvalidAccountData);

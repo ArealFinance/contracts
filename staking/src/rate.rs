@@ -64,7 +64,10 @@ mod tests {
     fn bootstrap_first_stake_rate_10() {
         let rwt_in = 100_000_000; // 100 RWT
         let out = strwt_out_for_stake(rwt_in, 0, 0).unwrap();
-        assert_eq!(out, 10_000_000, "100 RWT into empty pool → 10 stRWT (rate 10)");
+        assert_eq!(
+            out, 10_000_000,
+            "100 RWT into empty pool → 10 stRWT (rate 10)"
+        );
     }
 
     /// deposit_rewards raises the rate: supply unchanged, active grows.
@@ -99,7 +102,10 @@ mod tests {
         // The virtual offsets make rate monotonically non-decreasing on unstake
         // (pool keeps the rounding dust). Difference must be tiny (<= 1 unit).
         let diff = r_after.abs_diff(r_before);
-        assert!(diff <= 1, "rate drifted by {diff} (>1) on proportional unstake");
+        assert!(
+            diff <= 1,
+            "rate drifted by {diff} (>1) on proportional unstake"
+        );
     }
 
     /// Round-trip never leaks: stake then immediate unstake of the received
@@ -208,7 +214,10 @@ mod tests {
         assert_inv(active, reserved, vault);
 
         // Supply was reduced by the burn and never re-minted on the unstake path.
-        assert!(supply < strwt_out, "stRWT supply must shrink after the burn");
+        assert!(
+            supply < strwt_out,
+            "stRWT supply must shrink after the burn"
+        );
     }
 
     /// Cooldown gate (staking.mdx §"complete_unstake"): completing before
@@ -225,6 +234,9 @@ mod tests {
 
         // At/after unlock: allowed.
         let now_ok = unlock_ts;
-        assert!(now_ok >= unlock_ts, "completion at unlock_ts must be allowed");
+        assert!(
+            now_ok >= unlock_ts,
+            "completion at unlock_ts must be allowed"
+        );
     }
 }

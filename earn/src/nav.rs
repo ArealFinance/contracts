@@ -1,6 +1,6 @@
-use arlex_lang::prelude::*;
 use crate::constants::{INITIAL_NAV, NAV_SCALE};
 use crate::error::EarnError;
+use arlex_lang::prelude::*;
 
 /// Calculate Book NAV Price per RWT token.
 ///

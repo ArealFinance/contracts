@@ -5,7 +5,7 @@
 //!   strwt_out = rwt_amount × (strwt_supply + V_SHARES) / (active + V_ASSETS)
 //!   (u128 intermediate, floor — rounds toward the pool / against the user)
 //!
-//! Reverts: StakingPaused, BelowMinStake, ZeroStrwtOutput, SlippageExceeded.
+//! Reverts: BelowMinStake, ZeroStrwtOutput, SlippageExceeded.
 //! Effects (before CPI): `total_rwt_active += rwt_amount`.
 //! CPI: Transfer user → pool_vault; mint_to user (stRWT, signed by config PDA).
 
@@ -56,12 +56,10 @@ pub fn handler(ctx: Context<Stake>, rwt_amount: u64, min_strwt_out: u64) -> Resu
     // the guard's Drop releases the borrow flag at the end of this block.
     let (config_bump, active_after, strwt_supply_after, rate_after, strwt_out);
     {
+        StakingConfig::assert_account_size(ctx.accounts.staking_config)?;
         let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
         // --- Checks ---
-        if config.is_paused {
-            return Err(ProgramError::from(StakingError::StakingPaused));
-        }
         if rwt_amount < config.min_stake_amount {
             return Err(ProgramError::from(StakingError::BelowMinStake));
         }

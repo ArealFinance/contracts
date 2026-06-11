@@ -52,12 +52,10 @@ pub fn handler(ctx: Context<InitiateUnstake>, strwt_amount: u64, nonce: u64) -> 
     // staking_config PDA is NOT passed into either CPI below (the Burn is signed
     // by `user`; the CreateAccount is signed by the ticket PDA), so the guard may
     // stay live across both CPIs — config.cooldown_seconds is read between them.
+    StakingConfig::assert_account_size(ctx.accounts.staking_config)?;
     let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
     // --- Checks ---
-    if config.is_paused {
-        return Err(ProgramError::from(StakingError::StakingPaused));
-    }
     if strwt_amount == 0 {
         return Err(ProgramError::from(StakingError::ZeroRwtOutput));
     }

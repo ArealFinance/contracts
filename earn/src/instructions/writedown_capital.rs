@@ -9,7 +9,7 @@
 //! NAV > 0). `reason_code` is a free-form authority hint for the event.
 
 use arlex_lang::prelude::*;
-use pinocchio::sysvars::{Sysvar, clock::Clock};
+use pinocchio::sysvars::{clock::Clock, Sysvar};
 
 use crate::constants::{EARN_CONFIG_SEED, MIN_CAPITAL_FLOOR, SPL_TOKEN_PROGRAM};
 use crate::error::EarnError;
@@ -34,12 +34,9 @@ pub struct WritedownCapital<'info> {
     pub rwt_mint: &'info AccountView,
 }
 
-pub fn handler(
-    ctx: Context<WritedownCapital>,
-    amount: u64,
-    reason_code: u8,
-) -> Result<()> {
+pub fn handler(ctx: Context<WritedownCapital>, amount: u64, reason_code: u8) -> Result<()> {
     // `mut` binding: capital write goes through the guard's DerefMut. No CPI.
+    EarnConfig::assert_account_size(ctx.accounts.earn_config)?;
     let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---
@@ -53,7 +50,8 @@ pub fn handler(
     let supply = read_mint_supply(ctx.accounts.rwt_mint)?;
     let nav_before = calculate_nav(config.total_invested_capital, supply)?;
 
-    let new_capital = config.total_invested_capital
+    let new_capital = config
+        .total_invested_capital
         .checked_sub(amount as u128)
         .ok_or_else(|| ProgramError::from(EarnError::InsufficientCapital))?;
 
@@ -90,13 +88,19 @@ mod tests {
         let capital: u128 = 10;
         // Writing down 10 → 0 breaches the floor (0 < MIN_CAPITAL_FLOOR == 1).
         let breach = capital.checked_sub(10).unwrap();
-        assert!(breach < MIN_CAPITAL_FLOOR as u128, "0 must breach the floor");
+        assert!(
+            breach < MIN_CAPITAL_FLOOR as u128,
+            "0 must breach the floor"
+        );
 
         // Writing down 9 → 1 is exactly at the floor (allowed).
         let ok = capital.checked_sub(9).unwrap();
         assert!(ok >= MIN_CAPITAL_FLOOR as u128, "1 must satisfy the floor");
 
         // Writing down more than capital underflows (checked_sub → None).
-        assert!(capital.checked_sub(11).is_none(), "over-writedown underflows");
+        assert!(
+            capital.checked_sub(11).is_none(),
+            "over-writedown underflows"
+        );
     }
 }

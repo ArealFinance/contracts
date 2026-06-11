@@ -45,18 +45,17 @@ use arlex_lang::prelude::*;
 pub mod constants;
 pub mod error;
 pub mod events;
-pub mod state;
-pub mod nav;
-pub mod validation;
 pub mod instructions;
+pub mod nav;
+pub mod state;
+pub mod validation;
 
+use instructions::add_to_basket::AddToBasket;
+use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
 use instructions::initialize::Initialize;
 use instructions::mint_rwt::MintRwt;
-use instructions::add_to_basket::AddToBasket;
-use instructions::writedown_capital::WritedownCapital;
-use instructions::pause::{PauseEarn, UnpauseEarn};
 use instructions::update_config::UpdateConfig;
-use instructions::authority_transfer::{ProposeAuthorityTransfer, AcceptAuthorityTransfer};
+use instructions::writedown_capital::WritedownCapital;
 
 // Program ID. Devnet uses the keypair at keys/devnet/earn-v2.json; the
 // non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
@@ -70,37 +69,14 @@ pub mod earn {
     use super::*;
 
     /// One-time bootstrap. Creates EarnConfig PDA, pins mints / basket_vault /
-    /// dao_fee_destination / pause guardians (up to 3, slot 0 mandatory).
-    /// Initial NAV is implicit ($1.00).
-    ///
-    /// The three pause guardians are passed as separate `[u8; 32]` args (not a
-    /// single `[[u8; 32]; 3]`) because Arlex `ArgsDeserialize` lacks nested
-    /// fixed-array support. The handler assembles them into the `[[u8; 32]; 3]`
-    /// guardian slots; slot 1 is mandatory non-zero, slots 2/3 may be zero
-    /// (= unused).
-    pub fn initialize(
-        ctx: Context<Initialize>,
-        authority: [u8; 32],
-        pause_authority_1: [u8; 32],
-        pause_authority_2: [u8; 32],
-        pause_authority_3: [u8; 32],
-    ) -> Result<()> {
-        crate::instructions::initialize::handler(
-            ctx,
-            authority,
-            pause_authority_1,
-            pause_authority_2,
-            pause_authority_3,
-        )
+    /// dao_fee_destination. Initial NAV is implicit ($1.00).
+    pub fn initialize(ctx: Context<Initialize>, authority: [u8; 32]) -> Result<()> {
+        crate::instructions::initialize::handler(ctx, authority)
     }
 
     /// User deposits USDC at Book NAV (+1% fee), receives earn-RWT.
     /// `min_rwt_out`: slippage protection (revert if output < minimum).
-    pub fn mint_rwt(
-        ctx: Context<MintRwt>,
-        usdc_amount: u64,
-        min_rwt_out: u64,
-    ) -> Result<()> {
+    pub fn mint_rwt(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Result<()> {
         crate::instructions::mint_rwt::handler(ctx, usdc_amount, min_rwt_out)
     }
 
@@ -120,16 +96,6 @@ pub mod earn {
         crate::instructions::writedown_capital::handler(ctx, amount, reason_code)
     }
 
-    /// Pause mint flow (emergency stop). Any non-zero pause guardian can pause.
-    pub fn pause(ctx: Context<PauseEarn>) -> Result<()> {
-        crate::instructions::pause::pause_handler(ctx)
-    }
-
-    /// Resume mint flow. Authority-only (guardians cannot unpause).
-    pub fn unpause(ctx: Context<UnpauseEarn>) -> Result<()> {
-        crate::instructions::pause::unpause_handler(ctx)
-    }
-
     /// Authority-only admin tuning of mint fee, min mint amount, and the
     /// DAO fee destination.
     pub fn update_config(
@@ -139,7 +105,10 @@ pub mod earn {
         dao_fee_destination: [u8; 32],
     ) -> Result<()> {
         crate::instructions::update_config::handler(
-            ctx, mint_fee_bps, min_mint_amount, dao_fee_destination,
+            ctx,
+            mint_fee_bps,
+            min_mint_amount,
+            dao_fee_destination,
         )
     }
 

@@ -2,7 +2,7 @@
 //!
 //! Lets the authority retune the mint fee (bps), the minimum mint amount, and
 //! the DAO fee destination. The `basket_vault`, `rwt_mint`, `usdc_mint`, and
-//! `pause_authorities` are IMMUTABLE — set once at `initialize`.
+//! initial authority are set once at `initialize`.
 //!
 //! `mint_fee_bps` is capped at `MAX_MINT_FEE_BPS` (10%); `min_mint_amount` is
 //! bounded to `[MIN_MINT_AMOUNT, MAX_MIN_MINT_AMOUNT]` so the authority can
@@ -12,9 +12,7 @@
 use arlex_lang::prelude::*;
 use pinocchio::sysvars::{clock::Clock, Sysvar};
 
-use crate::constants::{
-    EARN_CONFIG_SEED, MAX_MINT_FEE_BPS, MAX_MIN_MINT_AMOUNT, MIN_MINT_AMOUNT,
-};
+use crate::constants::{EARN_CONFIG_SEED, MAX_MINT_FEE_BPS, MAX_MIN_MINT_AMOUNT, MIN_MINT_AMOUNT};
 use crate::error::EarnError;
 use crate::events::EarnConfigUpdated;
 use crate::state::EarnConfig;
@@ -70,6 +68,7 @@ pub fn handler(
     dao_fee_destination: [u8; 32],
 ) -> Result<()> {
     // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    EarnConfig::assert_account_size(ctx.accounts.earn_config)?;
     let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---
@@ -151,21 +150,11 @@ mod tests {
     fn update_config_keeps_existing_fee_and_destination_guards() {
         // L2: above the 10% ceiling is rejected with FeeTooHigh.
         assert_err_code(
-            validate_update_config_inputs(
-                MAX_MINT_FEE_BPS + 1,
-                MIN_MINT_AMOUNT,
-                [1u8; 32],
-                BASKET,
-            ),
+            validate_update_config_inputs(MAX_MINT_FEE_BPS + 1, MIN_MINT_AMOUNT, [1u8; 32], BASKET),
             EarnError::FeeTooHigh,
         );
         assert_err_code(
-            validate_update_config_inputs(
-                DEFAULT_MINT_FEE_BPS,
-                MIN_MINT_AMOUNT,
-                [0u8; 32],
-                BASKET,
-            ),
+            validate_update_config_inputs(DEFAULT_MINT_FEE_BPS, MIN_MINT_AMOUNT, [0u8; 32], BASKET),
             EarnError::InvalidFeeDestination,
         );
     }
@@ -175,12 +164,7 @@ mod tests {
         // L1: collapsing the fee destination onto the basket vault is rejected —
         // it would leak unaccounted fees into the basket and desync NAV.
         assert_err_code(
-            validate_update_config_inputs(
-                DEFAULT_MINT_FEE_BPS,
-                MIN_MINT_AMOUNT,
-                BASKET,
-                BASKET,
-            ),
+            validate_update_config_inputs(DEFAULT_MINT_FEE_BPS, MIN_MINT_AMOUNT, BASKET, BASKET),
             EarnError::FeeDestinationIsBasketVault,
         );
     }

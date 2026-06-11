@@ -1,5 +1,5 @@
 //! `deposit_rewards(rwt_amount)` — reward_depositor adds RWT to the pool,
-//! raising the rate. NO stRWT minted; NOT gated by pause.
+//! raising the rate. NO stRWT minted.
 //!
 //! staking.mdx §"deposit_rewards":
 //!   - Signer MUST equal `reward_depositor` (UnauthorizedRewardDepositor).
@@ -45,11 +45,14 @@ pub fn handler(ctx: Context<DepositRewards>, rwt_amount: u64) -> Result<()> {
     // `mut` binding: counter write goes through the guard's DerefMut. The
     // staking_config PDA is NOT passed into the Transfer CPI below (the depositor
     // signs), so the guard may stay live across the transfer.
+    StakingConfig::assert_account_size(ctx.accounts.staking_config)?;
     let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
-    // --- Whitelist: only the configured reward_depositor (NOT pause-gated) ---
+    // --- Whitelist: only the configured reward_depositor ---
     if ctx.accounts.depositor.address().as_ref() != config.reward_depositor.as_ref() {
-        return Err(ProgramError::from(StakingError::UnauthorizedRewardDepositor));
+        return Err(ProgramError::from(
+            StakingError::UnauthorizedRewardDepositor,
+        ));
     }
     if rwt_amount == 0 {
         return Err(ProgramError::from(StakingError::ZeroRwtOutput));

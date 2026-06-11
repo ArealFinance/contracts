@@ -63,13 +63,6 @@ pub struct UnstakeCompleted {
     pub timestamp: i64,
 }
 
-/// Emitted by `pause` / `unpause`.
-#[event]
-pub struct StakingPauseToggled {
-    pub is_paused: bool,
-    pub timestamp: i64,
-}
-
 /// Emitted on `update_config`.
 #[event]
 pub struct StakingConfigUpdated {

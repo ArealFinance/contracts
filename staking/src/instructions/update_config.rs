@@ -43,6 +43,7 @@ pub fn handler(
     cooldown_seconds: i64,
 ) -> Result<()> {
     // `mut` binding: field writes go through the guard's DerefMut. No CPI.
+    StakingConfig::assert_account_size(ctx.accounts.staking_config)?;
     let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
     // Authority gate.

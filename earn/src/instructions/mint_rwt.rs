@@ -18,7 +18,7 @@
 //! Effects (`total_invested_capital += body`) are applied BEFORE the CPIs.
 
 use arlex_lang::prelude::*;
-use pinocchio::sysvars::{Sysvar, clock::Clock};
+use pinocchio::sysvars::{clock::Clock, Sysvar};
 
 use crate::constants::*;
 use crate::error::EarnError;
@@ -69,12 +69,10 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
     // guard's Drop releases the borrow flag at the end of this block.
     let (fee, rwt_out, nav_after, config_bump);
     {
+        EarnConfig::assert_account_size(ctx.accounts.earn_config)?;
         let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
         // --- Checks ---
-        if config.is_paused {
-            return Err(ProgramError::from(EarnError::EarnPaused));
-        }
         if usdc_amount == 0 {
             return Err(ProgramError::from(EarnError::ZeroAmount));
         }
@@ -92,7 +90,9 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
         if ctx.accounts.basket_vault.address().as_ref() != config.basket_vault.as_ref() {
             return Err(ProgramError::from(EarnError::InvalidTokenAccount));
         }
-        if ctx.accounts.dao_fee_destination.address().as_ref() != config.dao_fee_destination.as_ref() {
+        if ctx.accounts.dao_fee_destination.address().as_ref()
+            != config.dao_fee_destination.as_ref()
+        {
             return Err(ProgramError::from(EarnError::InvalidTokenAccount));
         }
 
@@ -122,17 +122,17 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
         let nav = calculate_nav(config.total_invested_capital, supply)?;
 
         // fee = usdc_amount × mint_fee_bps / 10_000 (charged on top of the body).
-        fee = arlex_lang::math::mul_div_u64(
-            usdc_amount, config.mint_fee_bps as u64, BPS_DENOMINATOR,
-        ).ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
+        fee =
+            arlex_lang::math::mul_div_u64(usdc_amount, config.mint_fee_bps as u64, BPS_DENOMINATOR)
+                .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
 
         // rwt_out = (usdc_amount × NAV_SCALE) / nav — u128 BEFORE the multiply.
         let rwt_out_u128 = (usdc_amount as u128)
             .checked_mul(NAV_SCALE as u128)
             .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?
             / (nav as u128);
-        rwt_out = u64::try_from(rwt_out_u128)
-            .map_err(|_| ProgramError::from(EarnError::MathOverflow))?;
+        rwt_out =
+            u64::try_from(rwt_out_u128).map_err(|_| ProgramError::from(EarnError::MathOverflow))?;
 
         // SECURITY: reject a mint that would produce 0 RWT (user pays, gets nothing).
         if rwt_out == 0 {
@@ -145,7 +145,8 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
 
         // --- Effects: update config state BEFORE CPIs ---
         // Only the body grows capital; the fee is DAO revenue, excluded → NAV-neutral.
-        config.total_invested_capital = config.total_invested_capital
+        config.total_invested_capital = config
+            .total_invested_capital
             .checked_add(usdc_amount as u128)
             .ok_or_else(|| ProgramError::from(EarnError::MathOverflow))?;
 
@@ -165,7 +166,8 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
         to: ctx.accounts.basket_vault,
         authority: ctx.accounts.user,
         amount: usdc_amount,
-    }.invoke()?;
+    }
+    .invoke()?;
 
     // 2. User transfers fee → dao_fee_destination.
     if fee > 0 {
@@ -174,7 +176,8 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
             to: ctx.accounts.dao_fee_destination,
             authority: ctx.accounts.user,
             amount: fee,
-        }.invoke()?;
+        }
+        .invoke()?;
     }
 
     // 3. EarnConfig PDA mints RWT to the user.
@@ -182,10 +185,7 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
     // block above, so passing earn_config as the mint_authority signer here is
     // accepted by the checked invoke (no live AccountRefMut on this account).
     let bump = [config_bump];
-    let seeds = [
-        Seed::from(EARN_CONFIG_SEED),
-        Seed::from(bump.as_ref()),
-    ];
+    let seeds = [Seed::from(EARN_CONFIG_SEED), Seed::from(bump.as_ref())];
     let signer = Signer::from(&seeds);
 
     arlex_lang::token::instructions::MintTo {
@@ -193,7 +193,8 @@ pub fn handler(ctx: Context<MintRwt>, usdc_amount: u64, min_rwt_out: u64) -> Res
         account: ctx.accounts.user_rwt,
         mint_authority: ctx.accounts.earn_config,
         amount: rwt_out,
-    }.invoke_signed(&[signer])?;
+    }
+    .invoke_signed(&[signer])?;
 
     // --- Emit event ---
     let clock = Clock::get()?;
@@ -224,7 +225,8 @@ mod tests {
     /// Mirror the handler's pricing math without a BPF runtime.
     fn price(capital: u128, supply: u64, usdc_amount: u64, fee_bps: u16) -> (u64, u64, u64) {
         let nav = calculate_nav(capital, supply).unwrap();
-        let fee = arlex_lang::math::mul_div_u64(usdc_amount, fee_bps as u64, BPS_DENOMINATOR).unwrap();
+        let fee =
+            arlex_lang::math::mul_div_u64(usdc_amount, fee_bps as u64, BPS_DENOMINATOR).unwrap();
         let rwt_out_u128 = (usdc_amount as u128) * (NAV_SCALE as u128) / (nav as u128);
         let rwt_out = u64::try_from(rwt_out_u128).unwrap();
         (nav, fee, rwt_out)
@@ -245,7 +247,7 @@ mod tests {
         let usdc_amount: u64 = 100_000_000; // $100 body
         let (_, fee, _) = price(0, 0, usdc_amount, DEFAULT_MINT_FEE_BPS);
         assert_eq!(fee, 1_000_000); // $1 fee
-        // Capital grows ONLY by the body (mirrors the handler effect).
+                                    // Capital grows ONLY by the body (mirrors the handler effect).
         let capital_after = 0u128 + usdc_amount as u128;
         assert_eq!(capital_after, 100_000_000u128, "fee excluded from capital");
     }

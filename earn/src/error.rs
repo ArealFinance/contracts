@@ -5,14 +5,10 @@ pub enum EarnError {
     // ----- Access control -----
     #[msg("Signer is not the authority")]
     Unauthorized,
-    #[msg("Signer is not the pause authority")]
-    UnauthorizedPause,
     #[msg("Signer is not the bootstrap authority")]
     UnauthorizedBootstrap,
 
     // ----- Lifecycle / state -----
-    #[msg("Earn program is paused")]
-    EarnPaused,
     #[msg("RWT supply must be non-zero")]
     NoRwtSupply,
 
@@ -55,8 +51,6 @@ pub enum EarnError {
     InvalidTokenOwner,
     #[msg("Destination address cannot be zero")]
     ZeroDestination,
-    #[msg("Pause authority cannot be zero address")]
-    InvalidPauseAuthority,
     #[msg("Fee destination cannot be zero address")]
     InvalidFeeDestination,
 
@@ -69,13 +63,6 @@ pub enum EarnError {
     SelfTransfer,
 
     // ----- Accounting integrity -----
-    // NOTE: appended at the END to preserve existing error-code stability.
     #[msg("Fee destination cannot be the basket vault")]
     FeeDestinationIsBasketVault,
-
-    // ----- Pause guardians -----
-    // NOTE: appended at the END (after FeeDestinationIsBasketVault) to preserve
-    // existing error-code stability.
-    #[msg("Duplicate pause authority")]
-    DuplicatePauseAuthority,
 }

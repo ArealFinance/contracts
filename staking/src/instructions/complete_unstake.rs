@@ -50,6 +50,7 @@ pub fn handler(ctx: Context<CompleteUnstake>, nonce: u64) -> Result<()> {
     // borrow flag at the end of this block.
     let (amount_rwt, reserved_after, config_bump);
     {
+        StakingConfig::assert_account_size(ctx.accounts.staking_config)?;
         let mut config = StakingConfig::load_mut(ctx.accounts.staking_config, ctx.program_id)?;
 
         // Validate vault + user ATA against config.

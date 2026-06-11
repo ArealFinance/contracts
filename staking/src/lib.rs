@@ -38,19 +38,18 @@ use arlex_lang::prelude::*;
 pub mod constants;
 pub mod error;
 pub mod events;
+pub mod instructions;
 pub mod rate;
 pub mod state;
 pub mod token;
-pub mod instructions;
 
-use instructions::initialize::Initialize;
-use instructions::stake::Stake;
-use instructions::deposit_rewards::DepositRewards;
-use instructions::initiate_unstake::InitiateUnstake;
-use instructions::complete_unstake::CompleteUnstake;
-use instructions::pause::{PauseStaking, UnpauseStaking};
-use instructions::update_config::UpdateConfig;
 use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
+use instructions::complete_unstake::CompleteUnstake;
+use instructions::deposit_rewards::DepositRewards;
+use instructions::initialize::Initialize;
+use instructions::initiate_unstake::InitiateUnstake;
+use instructions::stake::Stake;
+use instructions::update_config::UpdateConfig;
 
 // Program ID. Devnet uses the keypair at keys/devnet/staking-v2.json; the
 // non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
@@ -65,27 +64,9 @@ pub mod staking {
 
     /// One-time bootstrap. Creates StakingConfig PDA, the stRWT mint (auth =
     /// config PDA), the RWT pool vault (config-PDA-owned RWT ATA), and pins the
-    /// pause guardians (up to 3, slot 0 mandatory).
-    ///
-    /// The three pause guardians are passed as separate `[u8; 32]` args (not a
-    /// single `[[u8; 32]; 3]`) because Arlex `ArgsDeserialize` lacks nested
-    /// fixed-array support. The handler assembles them into the `[[u8; 32]; 3]`
-    /// guardian slots; slot 1 is mandatory non-zero, slots 2/3 may be zero
-    /// (= unused).
-    pub fn initialize(
-        ctx: Context<Initialize>,
-        pause_authority_1: [u8; 32],
-        pause_authority_2: [u8; 32],
-        pause_authority_3: [u8; 32],
-        reward_depositor: [u8; 32],
-    ) -> Result<()> {
-        crate::instructions::initialize::handler(
-            ctx,
-            pause_authority_1,
-            pause_authority_2,
-            pause_authority_3,
-            reward_depositor,
-        )
+    /// reward depositor.
+    pub fn initialize(ctx: Context<Initialize>, reward_depositor: [u8; 32]) -> Result<()> {
+        crate::instructions::initialize::handler(ctx, reward_depositor)
     }
 
     /// Deposit RWT, mint stRWT at the current rate. `min_strwt_out` is
@@ -95,7 +76,6 @@ pub mod staking {
     }
 
     /// reward_depositor-only RWT inflow. Raises the rate; mints no stRWT.
-    /// Not gated by pause.
     pub fn deposit_rewards(ctx: Context<DepositRewards>, rwt_amount: u64) -> Result<()> {
         crate::instructions::deposit_rewards::handler(ctx, rwt_amount)
     }
@@ -113,16 +93,6 @@ pub mod staking {
     /// After the cooldown elapses, claim the reserved RWT and close the ticket.
     pub fn complete_unstake(ctx: Context<CompleteUnstake>, nonce: u64) -> Result<()> {
         crate::instructions::complete_unstake::handler(ctx, nonce)
-    }
-
-    /// Pause stake/unstake (emergency stop). Any non-zero pause guardian can pause.
-    pub fn pause(ctx: Context<PauseStaking>) -> Result<()> {
-        crate::instructions::pause::pause_handler(ctx)
-    }
-
-    /// Resume stake/unstake. Authority-only (guardians cannot unpause).
-    pub fn unpause(ctx: Context<UnpauseStaking>) -> Result<()> {
-        crate::instructions::pause::unpause_handler(ctx)
     }
 
     /// Authority-only tuning of reward_depositor / min_stake_amount / cooldown.

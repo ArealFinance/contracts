@@ -24,22 +24,30 @@ use arlex_lang::prelude::*;
 
 #[account]
 pub struct EarnConfig {
-    pub total_invested_capital: u128,    // 16 — Book NAV numerator
-    pub authority: [u8; 32],             // 32 — V1: single key, V2: multisig
-    pub pending_authority: [u8; 32],     // 32 (zeroed = no pending transfer)
-    pub has_pending: bool,               // 1
-    pub pause_authorities: [[u8; 32]; 3], // 96 — immutable guardians (change only via program upgrade); any can pause, only `authority` unpauses; a zeroed slot = unused
-    pub is_paused: bool,                 // 1
-    pub mint_fee_bps: u16,               // 2 — default 100 (1%); tunable via update_config
-    pub basket_vault: [u8; 32],          // 32 — USDC vault, EarnConfig-PDA-owned (immutable)
-    pub dao_fee_destination: [u8; 32],   // 32 — USDC ATA for the 1% commission (tunable)
-    pub rwt_mint: [u8; 32],              // 32 — the earn-RWT mint (mint authority = EarnConfig PDA)
-    pub usdc_mint: [u8; 32],             // 32 — deposit currency
-    pub min_mint_amount: u64,            // 8 — anti-dust floor
-    pub bump: u8,                        // 1 — PDA bump
+    pub total_invested_capital: u128,  // 16 — Book NAV numerator
+    pub authority: [u8; 32],           // 32 — V1: single key, V2: multisig
+    pub pending_authority: [u8; 32],   // 32 (zeroed = no pending transfer)
+    pub has_pending: bool,             // 1
+    pub mint_fee_bps: u16,             // 2 — default 100 (1%); tunable via update_config
+    pub basket_vault: [u8; 32],        // 32 — USDC vault, EarnConfig-PDA-owned (immutable)
+    pub dao_fee_destination: [u8; 32], // 32 — USDC ATA for the 1% commission (tunable)
+    pub rwt_mint: [u8; 32],            // 32 — the earn-RWT mint (mint authority = EarnConfig PDA)
+    pub usdc_mint: [u8; 32],           // 32 — deposit currency
+    pub min_mint_amount: u64,          // 8 — anti-dust floor
+    pub bump: u8,                      // 1 — PDA bump
 }
-// SIZE = 16 + 32 + 32 + 1 + 96 + 1 + 2 + 32 + 32 + 32 + 32 + 8 + 1 = 317
-// SPACE = 8 + 317 = 325
-//   running: 16,48,80,81,177,178,180,212,244,276,308,316,317
+// SIZE = 16 + 32 + 32 + 1 + 2 + 32 + 32 + 32 + 32 + 8 + 1 = 220
+// SPACE = 8 + 220 = 228
+//   running: 16,48,80,81,83,115,147,179,211,219,220
 
-const _: () = assert!(core::mem::size_of::<EarnConfig>() == 317);
+const _: () = assert!(core::mem::size_of::<EarnConfig>() == 220);
+
+impl EarnConfig {
+    pub fn assert_account_size(account: &AccountView) -> Result<()> {
+        if account.data_len() != Self::SPACE {
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        Ok(())
+    }
+}

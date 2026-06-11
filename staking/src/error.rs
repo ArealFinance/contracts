@@ -8,14 +8,8 @@ pub enum StakingError {
     // ----- Access control -----
     #[msg("Signer is not the authority")]
     Unauthorized,
-    #[msg("Signer is not the pause authority")]
-    UnauthorizedPause,
     #[msg("Signer is not the reward depositor")]
     UnauthorizedRewardDepositor,
-
-    // ----- Lifecycle -----
-    #[msg("Staking is paused")]
-    StakingPaused,
 
     // ----- Stake inputs -----
     #[msg("Stake below minimum")]
@@ -54,9 +48,4 @@ pub enum StakingError {
     ZeroAddress,
     #[msg("Signer is not the bootstrap authority")]
     UnauthorizedBootstrap,
-
-    // ----- Pause guardians -----
-    // NOTE: appended at the END to preserve existing error-code stability.
-    #[msg("Duplicate pause authority")]
-    DuplicatePauseAuthority,
 }

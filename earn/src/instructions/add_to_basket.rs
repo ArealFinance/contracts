@@ -64,6 +64,7 @@ pub fn handler(ctx: Context<AddToBasket>, amount: u64) -> Result<()> {
     // The earn_config PDA is NOT passed into the Transfer CPI below (the
     // authority signs, source/dest are token accounts), so the guard may stay
     // live across the transfer.
+    EarnConfig::assert_account_size(ctx.accounts.earn_config)?;
     let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     // --- Checks ---

@@ -23,11 +23,11 @@ pub struct EarnInitialized {
 #[event]
 pub struct RwtMinted {
     pub minter: [u8; 32],
-    pub deposit_body: u64,          // basket body (→ basket_vault, += capital)
-    pub fee: u64,                   // 1% commission (→ dao_fee_destination)
-    pub rwt_out: u64,               // RWT minted to user
-    pub nav_after: u64,             // NAV after mint (== NAV before — invariant)
-    pub source: u8,                 // MINT_SOURCE_USER / MINT_SOURCE_EXECUTOR
+    pub deposit_body: u64, // basket body (→ basket_vault, += capital)
+    pub fee: u64,          // 1% commission (→ dao_fee_destination)
+    pub rwt_out: u64,      // RWT minted to user
+    pub nav_after: u64,    // NAV after mint (== NAV before — invariant)
+    pub source: u8,        // MINT_SOURCE_USER / MINT_SOURCE_EXECUTOR
     pub timestamp: i64,
 }
 
@@ -35,7 +35,7 @@ pub struct RwtMinted {
 /// USDC into the basket. NAV rises for all holders (no RWT minted).
 #[event]
 pub struct BasketGrew {
-    pub amount: u64,                // USDC added to basket_vault
+    pub amount: u64, // USDC added to basket_vault
     pub nav_before: u64,
     pub nav_after: u64,
     pub timestamp: i64,
@@ -48,14 +48,7 @@ pub struct CapitalWrittenDown {
     pub amount: u64,
     pub nav_before: u64,
     pub nav_after: u64,
-    pub reason_code: u8,            // free-form authority hint; 0 = unspecified
-    pub timestamp: i64,
-}
-
-/// Emitted by `pause` and `unpause`.
-#[event]
-pub struct EarnPauseToggled {
-    pub is_paused: bool,
+    pub reason_code: u8, // free-form authority hint; 0 = unspecified
     pub timestamp: i64,
 }
 

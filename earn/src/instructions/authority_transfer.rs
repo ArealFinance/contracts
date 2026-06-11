@@ -7,7 +7,7 @@
 //!   `NoPendingAuthority` if none). Promotes pending → authority.
 
 use arlex_lang::prelude::*;
-use pinocchio::sysvars::{Sysvar, clock::Clock};
+use pinocchio::sysvars::{clock::Clock, Sysvar};
 
 use crate::constants::EARN_CONFIG_SEED;
 use crate::error::EarnError;
@@ -33,6 +33,7 @@ pub fn propose_handler(
     new_authority: [u8; 32],
 ) -> Result<()> {
     // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    EarnConfig::assert_account_size(ctx.accounts.earn_config)?;
     let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     if new_authority == [0u8; 32] {
@@ -71,6 +72,7 @@ pub struct AcceptAuthorityTransfer<'info> {
 
 pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
     // `mut` binding: field writes go through the guard's DerefMut. No CPI here.
+    EarnConfig::assert_account_size(ctx.accounts.earn_config)?;
     let mut config = EarnConfig::load_mut(ctx.accounts.earn_config, ctx.program_id)?;
 
     if !config.has_pending {
@@ -83,7 +85,9 @@ pub fn accept_handler(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
 
     let old_authority = config.authority;
 
-    config.authority.copy_from_slice(ctx.accounts.new_authority.address().as_ref());
+    config
+        .authority
+        .copy_from_slice(ctx.accounts.new_authority.address().as_ref());
     config.pending_authority = [0u8; 32];
     config.has_pending = false;
 

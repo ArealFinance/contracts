@@ -22,26 +22,34 @@ use arlex_lang::prelude::*;
 
 #[account]
 pub struct StakingConfig {
-    pub authority: [u8; 32],          // 32 — V1: single key, V2: multisig
-    pub pending_authority: [u8; 32],  // 32 — zeroed = no pending transfer
-    pub has_pending: bool,            // 1
-    pub pause_authorities: [[u8; 32]; 3], // 96 — immutable guardians (change only via program upgrade); any can pause, only `authority` unpauses; a zeroed slot = unused
-    pub is_paused: bool,              // 1  — gates stake/unstake (not deposit_rewards)
-    pub rwt_mint: [u8; 32],           // 32 — staked token (earn-RWT)
-    pub strwt_mint: [u8; 32],         // 32 — share token (mint authority = this PDA)
-    pub reward_depositor: [u8; 32],   // 32 — only caller of deposit_rewards
-    pub pool_vault: [u8; 32],         // 32 — RWT ATA owned by this PDA (active + reserved)
-    pub total_rwt_active: u64,        // 8  — RWT earning rewards (rate numerator)
-    pub total_rwt_reserved: u64,      // 8  — RWT locked in cooldown (not earning)
-    pub cooldown_seconds: i64,        // 8  — default 1_814_400 (21d), tunable
-    pub min_stake_amount: u64,        // 8  — anti-dust floor, tunable
-    pub bump: u8,                     // 1  — PDA bump
+    pub authority: [u8; 32],         // 32 — V1: single key, V2: multisig
+    pub pending_authority: [u8; 32], // 32 — zeroed = no pending transfer
+    pub has_pending: bool,           // 1
+    pub rwt_mint: [u8; 32],          // 32 — staked token (earn-RWT)
+    pub strwt_mint: [u8; 32],        // 32 — share token (mint authority = this PDA)
+    pub reward_depositor: [u8; 32],  // 32 — only caller of deposit_rewards
+    pub pool_vault: [u8; 32],        // 32 — RWT ATA owned by this PDA (active + reserved)
+    pub total_rwt_active: u64,       // 8  — RWT earning rewards (rate numerator)
+    pub total_rwt_reserved: u64,     // 8  — RWT locked in cooldown (not earning)
+    pub cooldown_seconds: i64,       // 8  — default 1_814_400 (21d), tunable
+    pub min_stake_amount: u64,       // 8  — anti-dust floor, tunable
+    pub bump: u8,                    // 1  — PDA bump
 }
-// SIZE = 32+32+1+96+1+32+32+32+32+8+8+8+8+1 = 323
-// SPACE = 8 (discriminator) + 323 = 331
-//   running: 32,64,65,161,162,194,226,258,290,298,306,314,322,323
+// SIZE = 32+32+1+32+32+32+32+8+8+8+8+1 = 226
+// SPACE = 8 (discriminator) + 226 = 234
+//   running: 32,64,65,97,129,161,193,201,209,217,225,226
 
-const _: () = assert!(core::mem::size_of::<StakingConfig>() == 323);
+const _: () = assert!(core::mem::size_of::<StakingConfig>() == 226);
+
+impl StakingConfig {
+    pub fn assert_account_size(account: &AccountView) -> Result<()> {
+        if account.data_len() != Self::SPACE {
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        Ok(())
+    }
+}
 
 // =============================================================================
 // UnstakeTicket — per-unstake cooldown receipt.
@@ -54,11 +62,11 @@ const _: () = assert!(core::mem::size_of::<StakingConfig>() == 323);
 
 #[account]
 pub struct UnstakeTicket {
-    pub owner: [u8; 32],   // 32
-    pub amount_rwt: u64,   // 8  — fixed at initiation
-    pub unlock_ts: i64,    // 8  — now + cooldown_seconds
-    pub nonce: u64,        // 8  — client-supplied (no per-user counter in state)
-    pub bump: u8,          // 1
+    pub owner: [u8; 32], // 32
+    pub amount_rwt: u64, // 8  — fixed at initiation
+    pub unlock_ts: i64,  // 8  — now + cooldown_seconds
+    pub nonce: u64,      // 8  — client-supplied (no per-user counter in state)
+    pub bump: u8,        // 1
 }
 // SIZE = 32 + 8 + 8 + 8 + 1 = 57
 // SPACE = 8 + 57 = 65
