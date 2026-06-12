@@ -29,25 +29,33 @@ pub const MIN_STAKE_AMOUNT: u64 = 1_000_000;
 
 // ===== Deployment pins =====
 // Devnet uses the deployer recorded in data/devnet-addresses.json. The
-// non-devnet placeholder intentionally bricks initialize until real mainnet
-// bootstrap and mint pins are set.
+// non-devnet (mainnet) pin is the Areal deployer
+// CyFCB88B3kMiPJSFLSXqP1u12dULeBaPh9qqjqquA1Np.
 #[cfg(feature = "devnet")]
 pub const BOOTSTRAP_AUTHORITY: [u8; 32] = [
     113, 99, 232, 220, 208, 39, 236, 240, 174, 142, 195, 171, 59, 231, 66, 10, 180, 85, 248, 95,
     186, 109, 55, 241, 57, 145, 147, 66, 159, 126, 75, 134,
 ];
 #[cfg(not(feature = "devnet"))]
-pub const BOOTSTRAP_AUTHORITY: [u8; 32] = [0u8; 32];
+pub const BOOTSTRAP_AUTHORITY: [u8; 32] = [
+    177, 217, 33, 18, 233, 27, 244, 236, 162, 235, 97, 21, 27, 235, 106, 191, 85, 147, 163, 7, 216,
+    235, 215, 57, 206, 206, 120, 13, 144, 232, 154, 153,
+];
 
 // Canonical earn-RWT mint used by staking. This is the earn-specific RWT mint,
 // not the legacy rwt-engine mint used by the larger app.
+//   - devnet:  72,84,179,... (Areal devnet earn-RWT)
+//   - mainnet: RWTeFt9M635Tf6w6yveAoXQR2ZwfXs7MfA7W3grDuGT (vanity earn-RWT mint)
 #[cfg(feature = "devnet")]
 pub const EARN_RWT_MINT: [u8; 32] = [
     114, 84, 179, 105, 246, 164, 208, 109, 85, 94, 130, 16, 92, 188, 157, 187, 210, 249, 30, 233,
     244, 25, 119, 235, 251, 227, 88, 2, 106, 40, 169, 110,
 ];
 #[cfg(not(feature = "devnet"))]
-pub const EARN_RWT_MINT: [u8; 32] = [0u8; 32];
+pub const EARN_RWT_MINT: [u8; 32] = [
+    6, 71, 63, 204, 93, 98, 64, 227, 160, 205, 60, 106, 13, 126, 100, 34, 86, 51, 235, 154, 222,
+    235, 47, 128, 28, 138, 234, 50, 207, 141, 249, 32,
+];
 
 // ===== Well-known program IDs (classic SPL Token only) =====
 // Mirrors `earn` / `rwt-engine` / `native-dex` so attribute macros can use

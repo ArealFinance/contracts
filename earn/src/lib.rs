@@ -59,11 +59,11 @@ use instructions::update_config::UpdateConfig;
 use instructions::writedown_capital::WritedownCapital;
 
 // Program ID. Devnet uses the keypair at keys/devnet/earn-v2.json; the
-// non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
+// non-devnet (mainnet) ID is the vanity key at keys/mainnet/earn-program.json.
 #[cfg(feature = "devnet")]
 declare_id!("HGh7TcuqUbTRrFTYBUtsTctAEEmsANWnDxeWcbgqMg8b");
 #[cfg(not(feature = "devnet"))]
-declare_id!("11111111111111111111111111111111");
+declare_id!("GTASb5UcQEkcRWuMwfoNABBBNJitdxWByobMLZZ2UCw8");
 
 #[program]
 pub mod earn {

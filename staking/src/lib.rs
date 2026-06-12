@@ -52,11 +52,11 @@ use instructions::stake::Stake;
 use instructions::update_config::UpdateConfig;
 
 // Program ID. Devnet uses the keypair at keys/devnet/staking-v2.json; the
-// non-devnet (Testnet/mainnet) ID is a placeholder pending a vanity grind.
+// non-devnet (mainnet) ID is the vanity key at keys/mainnet/staking-program.json.
 #[cfg(feature = "devnet")]
 declare_id!("CmKXHk3u6pDUC6Q11Le6gmhCgENQSFvduisXb7guUGoL");
 #[cfg(not(feature = "devnet"))]
-declare_id!("11111111111111111111111111111111");
+declare_id!("9tEKvDwkqkveBvmQfEzgPKWSNCDTGSSqYz4ZE6pP5DGY");
 
 #[program]
 pub mod staking {

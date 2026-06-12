@@ -30,15 +30,18 @@ pub const MAX_MIN_MINT_AMOUNT: u64 = 1_000_000_000_000; // $1,000,000
 
 // ===== Bootstrap authority =====
 // Devnet uses the deployer recorded in data/devnet-addresses.json. The
-// non-devnet placeholder intentionally bricks initialize until a real mainnet
-// bootstrap key is pinned.
+// non-devnet (mainnet) pin is the Areal deployer
+// CyFCB88B3kMiPJSFLSXqP1u12dULeBaPh9qqjqquA1Np.
 #[cfg(feature = "devnet")]
 pub const BOOTSTRAP_AUTHORITY: [u8; 32] = [
     113, 99, 232, 220, 208, 39, 236, 240, 174, 142, 195, 171, 59, 231, 66, 10, 180, 85, 248, 95,
     186, 109, 55, 241, 57, 145, 147, 66, 159, 126, 75, 134,
 ];
 #[cfg(not(feature = "devnet"))]
-pub const BOOTSTRAP_AUTHORITY: [u8; 32] = [0u8; 32];
+pub const BOOTSTRAP_AUTHORITY: [u8; 32] = [
+    177, 217, 33, 18, 233, 27, 244, 236, 162, 235, 97, 21, 27, 235, 106, 191, 85, 147, 163, 7, 216,
+    235, 215, 57, 206, 206, 120, 13, 144, 232, 154, 153,
+];
 
 // ===== Well-known program IDs (classic SPL Token only) =====
 // Mirrors `rwt-engine` and `native-dex` so attribute macros can use literal arrays.
@@ -59,11 +62,18 @@ pub const ASSOCIATED_TOKEN_PROGRAM: [u8; 32] = [
 // Earn-RWT is a NEW SPL mint, separate from the big-app's rwt-engine RWT.
 // Set in `initialize` from the actual mint account; no hardcoded pin needed here.
 //
-// USDC mint matches the Areal Testnet validator pin
-// (F9NVj8dFsqxbCfytfmrEWDjdDhmpV1YrjRuxiusGr9Ys).
+// USDC mint is feature-gated:
+//   - devnet:  5rrpFYYVkwGMeTTCox3EE4VBNvkYMCQmxkYJhS9TA4Wx (Areal devnet USDC)
+//   - mainnet: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v (canonical USDC)
+#[cfg(feature = "devnet")]
 pub const USDC_MINT: [u8; 32] = [
-    0xd2, 0x28, 0x91, 0x77, 0xde, 0xc3, 0x53, 0xcf, 0xbf, 0x50, 0x93, 0x06, 0x2b, 0xec, 0x3d, 0xe8,
-    0xf6, 0x81, 0x7d, 0xdf, 0x13, 0x0a, 0xb5, 0x32, 0x2a, 0x2a, 0x2a, 0x5d, 0x2c, 0xca, 0xc1, 0xb0,
+    72, 52, 136, 113, 12, 162, 62, 168, 209, 200, 90, 97, 62, 219, 139, 93, 239, 48, 27, 21, 31,
+    237, 106, 64, 127, 41, 239, 190, 228, 228, 21, 125,
+];
+#[cfg(not(feature = "devnet"))]
+pub const USDC_MINT: [u8; 32] = [
+    198, 250, 122, 243, 190, 219, 173, 58, 61, 101, 243, 106, 171, 201, 116, 49, 177, 187, 228,
+    194, 210, 246, 224, 228, 124, 166, 2, 3, 69, 47, 93, 97,
 ];
 
 // PDA seeds
