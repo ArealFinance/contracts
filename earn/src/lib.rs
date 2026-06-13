@@ -52,6 +52,7 @@ pub mod validation;
 
 use instructions::add_to_basket::AddToBasket;
 use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
+use instructions::create_rwt_metadata::CreateRwtMetadata;
 use instructions::initialize::Initialize;
 use instructions::mint_rwt::MintRwt;
 use instructions::seed_genesis::SeedGenesis;
@@ -134,5 +135,24 @@ pub mod earn {
     /// Step 2: Proposed authority accepts the transfer.
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         crate::instructions::authority_transfer::accept_handler(ctx)
+    }
+
+    /// Bootstrap-gated: create the Metaplex Token Metadata account for the
+    /// earn-RWT mint (name / symbol / uri) so wallets and Meteora display a
+    /// proper token instead of a nameless SPL Token. The EarnConfig PDA signs
+    /// the Metaplex CPI as mint_authority; the metadata update_authority is set
+    /// to `config.authority` (the multisig vault). Available on BOTH builds.
+    pub fn create_rwt_metadata(
+        ctx: Context<CreateRwtMetadata>,
+        name: [u8; 32],
+        name_len: u8,
+        symbol: [u8; 10],
+        symbol_len: u8,
+        uri: [u8; 200],
+        uri_len: u8,
+    ) -> Result<()> {
+        crate::instructions::create_rwt_metadata::handler(
+            ctx, name, name_len, symbol, symbol_len, uri, uri_len,
+        )
     }
 }
