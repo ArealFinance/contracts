@@ -45,6 +45,7 @@ pub mod token;
 
 use instructions::authority_transfer::{AcceptAuthorityTransfer, ProposeAuthorityTransfer};
 use instructions::complete_unstake::CompleteUnstake;
+use instructions::create_strwt_metadata::CreateStrwtMetadata;
 use instructions::deposit_rewards::DepositRewards;
 use instructions::initialize::Initialize;
 use instructions::initiate_unstake::InitiateUnstake;
@@ -121,5 +122,24 @@ pub mod staking {
     /// Step 2 of 2-step authority rotation. Pending-authority-only.
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         crate::instructions::authority_transfer::accept_handler(ctx)
+    }
+
+    /// Bootstrap-gated: create the Metaplex Token Metadata account for the
+    /// stRWT (Staked RWT) share mint (name / symbol / uri) so wallets display a
+    /// proper token instead of a nameless SPL Token. The StakingConfig PDA signs
+    /// the Metaplex CPI as mint_authority; the metadata update_authority is set
+    /// to `config.authority` (the multisig vault). Available on BOTH builds.
+    pub fn create_strwt_metadata(
+        ctx: Context<CreateStrwtMetadata>,
+        name: [u8; 32],
+        name_len: u8,
+        symbol: [u8; 10],
+        symbol_len: u8,
+        uri: [u8; 200],
+        uri_len: u8,
+    ) -> Result<()> {
+        crate::instructions::create_strwt_metadata::handler(
+            ctx, name, name_len, symbol, symbol_len, uri, uri_len,
+        )
     }
 }
